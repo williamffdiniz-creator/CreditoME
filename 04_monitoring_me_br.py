@@ -313,8 +313,8 @@ CREATE TABLE IF NOT EXISTS teste.iep_me_br (
 ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
 """)
 
-# Tabelas por variavel + grupo (sem coeficiente)
-for tname in ["iep_vars_me_br", "risco_relativo_me_br", "risco_relativo_trigger_me_br"]:
+# Tabelas por variavel + grupo (sem coeficiente), value DOUBLE
+for tname in ["iep_vars_me_br", "risco_relativo_me_br"]:
     spark.sql(f"""
     CREATE TABLE IF NOT EXISTS teste.{tname} (
       variaveis STRING, grupo STRING, period STRING, value DOUBLE,
@@ -322,6 +322,15 @@ for tname in ["iep_vars_me_br", "risco_relativo_me_br", "risco_relativo_trigger_
       reference_month INT, updated_at TIMESTAMP
     ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
     """)
+
+# risco_relativo_trigger: value e STRING ('true'/'false'), igual ao padrao Excel
+spark.sql("""
+CREATE TABLE IF NOT EXISTS teste.risco_relativo_trigger_me_br (
+  variaveis STRING, grupo STRING, period STRING, value STRING,
+  market_name STRING, metric_key STRING, reference_year INT,
+  reference_month INT, updated_at TIMESTAMP
+) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
+""")
 
 # Tabelas por variavel + grupo + coeficiente
 for tname in ["dist_vars_me_br", "dist_vars_diff_pp_me_br", "vol_vars_me_br"]:
@@ -535,8 +544,21 @@ for period in periods:
         rows["dist_por_decil_diff_pp"].append(
             (bi, period, round(diff, 6), MARKET_NAME,
              "dist_por_decil_diff_pp", ry, rm, NOW))
+    # Per-band PSI contribution + total (decil=100), mirroring estrutura Excel.
+    _eps = 1e-4
+    _keys_all = sorted(set(TRAIN_BAND_DIST) | set(band_dist))
+    _total_psi = 0.0
+    for _k in _keys_all:
+        _bi = int(float(_k))
+        _t_share = TRAIN_BAND_DIST.get(_k, 0.0) + _eps
+        _c_share = band_dist.get(_k, 0.0) + _eps
+        _contrib = (_c_share - _t_share) * np.log(_c_share / _t_share)
+        _total_psi += _contrib
+        rows["iep_por_decil"].append(
+            (_bi, period, round(float(_contrib), 6), MARKET_NAME,
+             "iep_por_decil", ry, rm, NOW))
     rows["iep_por_decil"].append(
-        (0, period, psi(TRAIN_BAND_DIST, band_dist), MARKET_NAME,
+        (100, period, round(_total_psi, 6), MARKET_NAME,
          "iep_por_decil", ry, rm, NOW))
 
     # ---------- bad rate por banda + diff pp ----------
@@ -615,7 +637,7 @@ for period in periods:
                         (f"{f}={lbl}", grupo, period, round(rr, 6),
                          MARKET_NAME, "risco_relativo", ry, rm, NOW))
                     # trigger: lift fora de [0.5, 2.0] sinaliza instabilidade
-                    trig = 1.0 if (rr < 0.5 or rr > 2.0) else 0.0
+                    trig = "true" if (rr < 0.5 or rr > 2.0) else "false"
                     rows["risco_relativo_trigger"].append(
                         (f"{f}={lbl}", grupo, period, trig,
                          MARKET_NAME, "risco_relativo_trigger", ry, rm, NOW))
@@ -656,12 +678,19 @@ for t in ["dist_por_decil", "dist_por_decil_diff_pp", "perc_bad_decil",
                    "reference_year", "reference_month", "updated_at"],
                   ["i", "s", "d", "s", "s", "i", "i", "t"],
                   ["decil", "period", "reference_year", "reference_month"])
-# tabelas var+grupo
-for t in ["iep_vars", "risco_relativo", "risco_relativo_trigger"]:
+# tabelas var+grupo (value DOUBLE)
+for t in ["iep_vars", "risco_relativo"]:
     SCHEMAS[t] = (["variaveis", "grupo", "period", "value", "market_name",
                    "metric_key", "reference_year", "reference_month", "updated_at"],
                   ["s", "s", "s", "d", "s", "s", "i", "i", "t"],
                   ["variaveis", "grupo", "period", "reference_year", "reference_month"])
+# risco_relativo_trigger: value STRING ('true'/'false')
+SCHEMAS["risco_relativo_trigger"] = (
+    ["variaveis", "grupo", "period", "value", "market_name",
+     "metric_key", "reference_year", "reference_month", "updated_at"],
+    ["s", "s", "s", "s", "s", "s", "i", "i", "t"],
+    ["variaveis", "grupo", "period", "reference_year", "reference_month"]
+)
 # tabelas var+grupo+coef
 for t in ["dist_vars", "dist_vars_diff_pp", "vol_vars"]:
     SCHEMAS[t] = (["variaveis", "grupo", "coeficientes", "period", "value",
