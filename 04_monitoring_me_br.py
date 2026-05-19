@@ -769,3 +769,286 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC FROM teste.iep_me_br
 # MAGIC WHERE period = (SELECT MAX(period) FROM teste.iep_me_br WHERE period <> 'Train')
 # MAGIC ORDER BY value DESC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Validacoes adicionais — qualidade profissional
+# MAGIC
+# MAGIC Cinco blocos de verificacao cobrindo cobertura, alertas consolidados,
+# MAGIC monotonicidade da discriminacao, diagnostico de PSI anomalo e tendencia
+# MAGIC de performance. Nenhum deles altera dados — sao apenas SELECTs.
+
+# COMMAND ----------
+
+# DBTITLE 1,V1: Cobertura e distribuicao por banda por periodo
+# MAGIC %sql
+# MAGIC -- Quantos clientes por banda, qual a concentracao em cada safra OOT.
+# MAGIC -- Bandas muito concentradas (>80% em uma faixa) sinalizam score degenerado.
+# MAGIC SELECT
+# MAGIC   d.period,
+# MAGIC   d.reference_year,
+# MAGIC   d.reference_month,
+# MAGIC   SUM(v.value)                                         AS total_clientes,
+# MAGIC   MAX(CASE WHEN d.decil = 1 THEN ROUND(d.value,2) END) AS pct_baixo,
+# MAGIC   MAX(CASE WHEN d.decil = 2 THEN ROUND(d.value,2) END) AS pct_medio,
+# MAGIC   MAX(CASE WHEN d.decil = 3 THEN ROUND(d.value,2) END) AS pct_alto,
+# MAGIC   MAX(CASE WHEN d.decil = -1 THEN ROUND(d.value,2) END) AS pct_sem_score,
+# MAGIC   CASE
+# MAGIC     WHEN MAX(CASE WHEN d.decil IN (1,2,3) THEN d.value ELSE 0 END) > 80
+# MAGIC     THEN 'ALERTA: concentracao alta' ELSE 'OK'
+# MAGIC   END AS flag_concentracao
+# MAGIC FROM teste.dist_por_decil_me_br d
+# MAGIC JOIN teste.vol_vars_me_br v
+# MAGIC   ON v.period = d.period
+# MAGIC  AND v.variaveis LIKE 'score=%'
+# MAGIC  AND v.periodo_ref = d.period
+# MAGIC GROUP BY d.period, d.reference_year, d.reference_month
+# MAGIC ORDER BY d.reference_year DESC, d.reference_month DESC
+
+# COMMAND ----------
+
+# DBTITLE 1,V1b: Cobertura simplificada (volume por banda)
+# MAGIC %sql
+# MAGIC -- Volume absoluto de clientes por banda por periodo OOT.
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   reference_year,
+# MAGIC   reference_month,
+# MAGIC   MAX(CASE WHEN decil = 1 THEN ROUND(value,2) END) AS pct_baixo,
+# MAGIC   MAX(CASE WHEN decil = 2 THEN ROUND(value,2) END) AS pct_medio,
+# MAGIC   MAX(CASE WHEN decil = 3 THEN ROUND(value,2) END) AS pct_alto,
+# MAGIC   MAX(CASE WHEN decil = -1 THEN ROUND(value,2) END) AS pct_sem_score
+# MAGIC FROM teste.dist_por_decil_me_br
+# MAGIC WHERE period <> 'Train'
+# MAGIC GROUP BY period, reference_year, reference_month
+# MAGIC ORDER BY reference_year DESC, reference_month DESC
+
+# COMMAND ----------
+
+# DBTITLE 1,V2: Alerta consolidado por periodo (PSI + performance)
+# MAGIC %sql
+# MAGIC -- Painel de alertas: cada linha e um periodo OOT com resumo de todos os sinais.
+# MAGIC -- Colunas de flag: 1 = alerta disparado, 0 = normal.
+# MAGIC WITH psi_pivot AS (
+# MAGIC   SELECT
+# MAGIC     period, reference_year, reference_month,
+# MAGIC     -- Exclui portfolio_score do PSI_MAX pois e variavel de grupo (binning degenera)
+# MAGIC     MAX(CASE WHEN variaveis <> 'portfolio_score' THEN value ELSE 0 END) AS psi_max_features,
+# MAGIC     MAX(CASE WHEN variaveis = 'payment_term'    THEN value ELSE 0 END) AS psi_payment_term,
+# MAGIC     MAX(CASE WHEN variaveis = 'overdue_pct'     THEN value ELSE 0 END) AS psi_overdue_pct,
+# MAGIC     MAX(CASE WHEN variaveis = 'portfolio_score' THEN value ELSE 0 END) AS psi_portfolio_score,
+# MAGIC     SUM(CASE WHEN value >= 0.25 AND variaveis <> 'portfolio_score' THEN 1 ELSE 0 END) AS n_features_significativo,
+# MAGIC     SUM(CASE WHEN value BETWEEN 0.10 AND 0.25 AND variaveis <> 'portfolio_score' THEN 1 ELSE 0 END) AS n_features_moderado
+# MAGIC   FROM teste.iep_me_br
+# MAGIC   WHERE period <> 'Train'
+# MAGIC   GROUP BY period, reference_year, reference_month
+# MAGIC ),
+# MAGIC perf AS (
+# MAGIC   SELECT period,
+# MAGIC     MAX(CASE WHEN performance = 'ROC'  THEN ROUND(value,4) END) AS roc,
+# MAGIC     MAX(CASE WHEN performance = 'KS'   THEN ROUND(value,4) END) AS ks,
+# MAGIC     MAX(CASE WHEN performance = 'Gini' THEN ROUND(value,4) END) AS gini
+# MAGIC   FROM teste.performance_me_br
+# MAGIC   WHERE period <> 'Train'
+# MAGIC   GROUP BY period
+# MAGIC ),
+# MAGIC train_perf AS (
+# MAGIC   SELECT
+# MAGIC     MAX(CASE WHEN performance = 'ROC' THEN value END) AS roc_train
+# MAGIC   FROM teste.performance_me_br WHERE period = 'Train'
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   p.period,
+# MAGIC   p.reference_year,
+# MAGIC   p.reference_month,
+# MAGIC   ROUND(pf.roc,   4) AS roc,
+# MAGIC   ROUND(pf.ks,    4) AS ks,
+# MAGIC   ROUND(pf.gini,  4) AS gini,
+# MAGIC   ROUND(p.psi_max_features, 4) AS psi_max_features,
+# MAGIC   p.n_features_significativo,
+# MAGIC   p.n_features_moderado,
+# MAGIC   -- Flags de alerta
+# MAGIC   CASE WHEN pf.roc < 0.50                                    THEN 1 ELSE 0 END AS flag_roc_abaixo_random,
+# MAGIC   CASE WHEN pf.roc < (SELECT roc_train FROM train_perf) - 0.10 THEN 1 ELSE 0 END AS flag_roc_queda_10pp,
+# MAGIC   CASE WHEN pf.ks  < 0.10                                    THEN 1 ELSE 0 END AS flag_ks_baixo,
+# MAGIC   CASE WHEN p.psi_max_features >= 0.25                       THEN 1 ELSE 0 END AS flag_psi_significativo,
+# MAGIC   CASE WHEN p.psi_payment_term >= 0.25                       THEN 1 ELSE 0 END AS flag_psi_payment_term,
+# MAGIC   CASE WHEN p.psi_overdue_pct  >= 0.25                       THEN 1 ELSE 0 END AS flag_psi_overdue_pct
+# MAGIC FROM psi_pivot p
+# MAGIC LEFT JOIN perf pf ON pf.period = p.period
+# MAGIC ORDER BY p.reference_year DESC, p.reference_month DESC
+
+# COMMAND ----------
+
+# DBTITLE 1,V3: Monotonicidade da discriminacao (bad rate BAIXO < MEDIO < ALTO)
+# MAGIC %sql
+# MAGIC -- O modelo e discriminante se bad_rate(ALTO) > bad_rate(MEDIO) > bad_rate(BAIXO).
+# MAGIC -- Linhas com flag_invertido = 'SIM' indicam falha de ordenacao de risco.
+# MAGIC WITH br AS (
+# MAGIC   SELECT period, reference_year, reference_month,
+# MAGIC     MAX(CASE WHEN decil = 1 THEN ROUND(value,4) END) AS bad_rate_baixo,
+# MAGIC     MAX(CASE WHEN decil = 2 THEN ROUND(value,4) END) AS bad_rate_medio,
+# MAGIC     MAX(CASE WHEN decil = 3 THEN ROUND(value,4) END) AS bad_rate_alto
+# MAGIC   FROM teste.perc_bad_decil_me_br
+# MAGIC   GROUP BY period, reference_year, reference_month
+# MAGIC )
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   bad_rate_baixo,
+# MAGIC   bad_rate_medio,
+# MAGIC   bad_rate_alto,
+# MAGIC   ROUND(bad_rate_alto - bad_rate_baixo, 4) AS spread_alto_baixo,
+# MAGIC   CASE
+# MAGIC     WHEN bad_rate_alto > bad_rate_medio AND bad_rate_medio > bad_rate_baixo THEN 'OK'
+# MAGIC     WHEN bad_rate_alto > bad_rate_baixo                                     THEN 'PARCIAL'
+# MAGIC     ELSE 'INVERTIDO'
+# MAGIC   END AS monotonicidade,
+# MAGIC   CASE
+# MAGIC     WHEN bad_rate_alto IS NULL OR bad_rate_baixo IS NULL THEN 'SEM DADOS'
+# MAGIC     WHEN bad_rate_alto <= bad_rate_baixo               THEN 'ALERTA: inversao total'
+# MAGIC     ELSE 'OK'
+# MAGIC   END AS flag_inversao
+# MAGIC FROM br
+# MAGIC WHERE period <> 'Train'
+# MAGIC ORDER BY reference_year DESC, reference_month DESC
+
+# COMMAND ----------
+
+# DBTITLE 1,V4: Diagnostico PSI portfolio_score (variavel de grupo)
+# MAGIC %sql
+# MAGIC -- portfolio_score e atribuido por grupo economico (76 grupos distintos).
+# MAGIC -- No nivel cliente, muitos clientes compartilham o mesmo valor -> binning
+# MAGIC -- quantilico pode colapsar -> PSI artificialmente alto. Verificar distribuicao.
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   variaveis,
+# MAGIC   ROUND(value, 4) AS pct_populacao,
+# MAGIC   coeficientes
+# MAGIC FROM teste.dist_vars_me_br
+# MAGIC WHERE variaveis LIKE 'portfolio_score=%'
+# MAGIC   AND period IN (
+# MAGIC     'Train',
+# MAGIC     (SELECT MAX(period) FROM teste.dist_vars_me_br WHERE period <> 'Train')
+# MAGIC   )
+# MAGIC ORDER BY period, variaveis
+
+# COMMAND ----------
+
+# DBTITLE 1,V4b: Numero de valores distintos de portfolio_score por periodo
+# MAGIC %sql
+# MAGIC -- Se portfolio_score tem poucos valores unicos em Train (ex: 5 bins colapsados),
+# MAGIC -- o PSI e invalido e deve ser tratado como categorico ou excluido do alarme.
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   COUNT(DISTINCT variaveis) AS n_bins_distintos,
+# MAGIC   SUM(value)                AS soma_pct_check  -- deve ser ~100
+# MAGIC FROM teste.dist_vars_me_br
+# MAGIC WHERE variaveis LIKE 'portfolio_score=%'
+# MAGIC GROUP BY period
+# MAGIC ORDER BY period
+
+# COMMAND ----------
+
+# DBTITLE 1,V5: Tendencia de performance ROC/KS com flags de alerta
+# MAGIC %sql
+# MAGIC -- Serie temporal de ROC e KS com indicadores de alerta por periodo.
+# MAGIC -- flag_critico: ROC < 0.50 (modelo pior que aleatório — investigar imediatamente).
+# MAGIC -- flag_atencao: ROC entre 0.50 e 0.55 ou KS < 0.15 (degradacao significativa).
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   reference_year,
+# MAGIC   reference_month,
+# MAGIC   ROUND(MAX(CASE WHEN performance = 'ROC'  THEN value END), 4) AS roc,
+# MAGIC   ROUND(MAX(CASE WHEN performance = 'KS'   THEN value END), 4) AS ks,
+# MAGIC   ROUND(MAX(CASE WHEN performance = 'Gini' THEN value END), 4) AS gini,
+# MAGIC   CASE
+# MAGIC     WHEN MAX(CASE WHEN performance = 'ROC' THEN value END) < 0.50 THEN 'CRITICO: abaixo do random'
+# MAGIC     WHEN MAX(CASE WHEN performance = 'ROC' THEN value END) < 0.55 THEN 'ATENCAO: ROC baixo'
+# MAGIC     WHEN MAX(CASE WHEN performance = 'KS'  THEN value END) < 0.15 THEN 'ATENCAO: KS baixo'
+# MAGIC     ELSE 'OK'
+# MAGIC   END AS status_performance
+# MAGIC FROM teste.performance_me_br
+# MAGIC GROUP BY period, reference_year, reference_month
+# MAGIC ORDER BY
+# MAGIC   CASE WHEN period = 'Train' THEN 0 ELSE 1 END,
+# MAGIC   reference_year,
+# MAGIC   reference_month
+
+# COMMAND ----------
+
+# DBTITLE 1,V6: PSI das variaveis pct_months_overdue (diagnostico de bins colapsados)
+# MAGIC %sql
+# MAGIC -- PSI = 0 para pct_months_overdue_* e esperado se a maioria dos clientes
+# MAGIC -- tem 0% de atraso -> todos no mesmo bin -> PSI estruturalmente zero.
+# MAGIC -- Confirmar: se o bin '(-inf, 0]' ou similar concentra >95% da populacao.
+# MAGIC SELECT
+# MAGIC   variaveis,
+# MAGIC   period,
+# MAGIC   ROUND(value, 4) AS pct_populacao
+# MAGIC FROM teste.dist_vars_me_br
+# MAGIC WHERE variaveis LIKE 'pct_months_overdue_10_20=%'
+# MAGIC   AND period IN (
+# MAGIC     'Train',
+# MAGIC     (SELECT MAX(period) FROM teste.dist_vars_me_br WHERE period <> 'Train')
+# MAGIC   )
+# MAGIC ORDER BY period, variaveis
+
+# COMMAND ----------
+
+# DBTITLE 1,V7: Triggers de risco relativo disparados — top alertas por periodo
+# MAGIC %sql
+# MAGIC -- Features com lift fora de [0.5, 2.0] sinalizam instabilidade do poder
+# MAGIC -- discriminante para aquela faixa. Listar as mais frequentes.
+# MAGIC SELECT
+# MAGIC   variaveis,
+# MAGIC   grupo,
+# MAGIC   COUNT(DISTINCT period) AS n_periodos_alerta,
+# MAGIC   MIN(period)            AS primeira_ocorrencia,
+# MAGIC   MAX(period)            AS ultima_ocorrencia
+# MAGIC FROM teste.risco_relativo_trigger_me_br
+# MAGIC WHERE value = 'true'
+# MAGIC   AND period <> 'Train'
+# MAGIC GROUP BY variaveis, grupo
+# MAGIC ORDER BY n_periodos_alerta DESC, ultima_ocorrencia DESC
+# MAGIC LIMIT 30
+
+# COMMAND ----------
+
+# DBTITLE 1,V8: Matriz de migracao de bandas — safra mais recente
+# MAGIC %sql
+# MAGIC -- Mostra quantos clientes mudaram de banda no ultimo mes.
+# MAGIC -- Diagonal = clientes estáveis; fora da diagonal = migracao.
+# MAGIC -- Alta migracao para banda -1 (sem score) pode indicar problema de cobertura.
+# MAGIC SELECT
+# MAGIC   previous_decile,
+# MAGIC   current_decile,
+# MAGIC   count,
+# MAGIC   ROUND(100.0 * count / SUM(count) OVER (PARTITION BY period), 2) AS pct_do_total,
+# MAGIC   period
+# MAGIC FROM teste.decile_migrations_me_br
+# MAGIC WHERE period = (
+# MAGIC   SELECT MAX(period) FROM teste.decile_migrations_me_br WHERE period <> 'Train'
+# MAGIC )
+# MAGIC ORDER BY previous_decile, current_decile
+
+# COMMAND ----------
+
+# DBTITLE 1,V9: Estabilidade do score — distribuicao do integrated_score por periodo
+# MAGIC %sql
+# MAGIC -- Verifica se o score continua com range e media razoaveis ao longo do tempo.
+# MAGIC -- Quedas abruptas de max ou mudancas de media sinalizam problema de dados.
+# MAGIC SELECT
+# MAGIC   DATE_FORMAT(reference_month, 'yyyy/MM') AS period,
+# MAGIC   COUNT(*)                                AS n_clientes,
+# MAGIC   ROUND(AVG(integrated_score),   4)       AS media_score,
+# MAGIC   ROUND(STDDEV(integrated_score),4)        AS std_score,
+# MAGIC   ROUND(MIN(integrated_score),   4)       AS min_score,
+# MAGIC   ROUND(MAX(integrated_score),   4)       AS max_score,
+# MAGIC   ROUND(PERCENTILE(integrated_score, 0.25), 4) AS p25,
+# MAGIC   ROUND(PERCENTILE(integrated_score, 0.50), 4) AS p50,
+# MAGIC   ROUND(PERCENTILE(integrated_score, 0.75), 4) AS p75,
+# MAGIC   COUNT(CASE WHEN integrated_score IS NULL THEN 1 END) AS n_nulos
+# MAGIC FROM teste.monitoring_me_br
+# MAGIC GROUP BY DATE_FORMAT(reference_month, 'yyyy/MM'), reference_month
+# MAGIC ORDER BY reference_month
