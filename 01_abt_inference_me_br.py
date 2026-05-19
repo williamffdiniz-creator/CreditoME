@@ -39,8 +39,8 @@
 # MAGIC ### Tabelas
 # MAGIC | Tabela | Descricao |
 # MAGIC |--------|-----------|
-# MAGIC | `teste.abt_inference_me_br` | Features + score por cliente/safra (4 faixas, escala %) |
-# MAGIC | `teste.portfolio_abt_group_me_br` | Medianas + portfolio_score por safra |
+# MAGIC | `ds_catalog_dev.default.abt_inference_me_br` | Features + score por cliente/safra (4 faixas, escala %) |
+# MAGIC | `ds_catalog_dev.default.portfolio_abt_group_me_br` | Medianas + portfolio_score por safra |
 
 # COMMAND ----------
 
@@ -56,9 +56,9 @@ print(f"Data de referencia: {effective_date}")
 
 # DBTITLE 0,DROP + CREATE abt_inference_me_br_v7
 dbutils.fs.rm("dbfs:/user/hive/warehouse/teste.db/abt_inference_me_br", True)
-spark.sql("DROP TABLE IF EXISTS teste.abt_inference_me_br")
+spark.sql("DROP TABLE IF EXISTS ds_catalog_dev.default.abt_inference_me_br")
 spark.sql("""
-CREATE TABLE teste.abt_inference_me_br (
+CREATE TABLE ds_catalog_dev.default.abt_inference_me_br (
   id_customer            INT,
   customer_name          STRING,
   country                STRING,
@@ -93,7 +93,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC SELECT MAX(reference_month) AS ultima_safra_processada,
 # MAGIC        current_timestamp() AS data_atualizacao,
 # MAGIC        (SELECT data_referencia FROM config_pipeline) AS data_referencia
-# MAGIC FROM teste.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
 
 # COMMAND ----------
 
@@ -110,7 +110,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC          CAST(valido_desde AS DATE) AS valido_desde,
 # MAGIC          TRY_CAST(REPLACE(REPLACE(taxa_cambio, '/', ''), ',', '.') AS FLOAT) AS taxa_cambio,
 # MAGIC          CAST(valido_ate AS DATE) AS valido_ate
-# MAGIC   FROM financeiro.dw_tab_parametro_cotacao_cambial
+# MAGIC   FROM de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial
 # MAGIC   WHERE moeda_procedencia IN ('AUD', 'EUR', 'CNY', 'AED', 'ARS', 'BRL')
 # MAGIC     AND moeda_destino = 'USD'
 # MAGIC     AND CONCAT(ctg_taxa_cambio, '-', moeda_procedencia) IN (
@@ -139,7 +139,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC %sql
 # MAGIC -- Retorna uma unica linha com a taxa CLP/USD mais recente disponivel.
 # MAGIC -- Usa a mesma tabela de parametros de cambio do pipeline Chile
-# MAGIC -- (financeiro.dw_tab_parametro_cotacao_cambial, moeda_procedencia = 'CLP', moeda_destino = 'USD').
+# MAGIC -- (de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial, moeda_procedencia = 'CLP', moeda_destino = 'USD').
 # MAGIC --
 # MAGIC -- Logica de forward-fill identica ao pipeline Chile:
 # MAGIC --   1. raw: expande cada registro de vigencia em dias individuais (SEQUENCE + LATERAL VIEW EXPLODE)
@@ -155,7 +155,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC     CAST(valido_desde AS DATE) AS valido_desde,
 # MAGIC     CAST(valido_ate   AS DATE) AS valido_ate,
 # MAGIC     TRY_CAST(REPLACE(REPLACE(taxa_cambio, '/', ''), ',', '.') AS FLOAT) AS taxa_cambio
-# MAGIC   FROM financeiro.dw_tab_parametro_cotacao_cambial
+# MAGIC   FROM de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial
 # MAGIC   WHERE moeda_procedencia = 'CLP'
 # MAGIC     AND moeda_destino      = 'USD'
 # MAGIC     AND taxa_cambio IS NOT NULL
@@ -211,7 +211,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC CREATE OR REPLACE TEMP VIEW view_fato_risco_dist AS
 # MAGIC SELECT id_invoice AS numero_invoice, year(dt_billing) AS ano_faturamento,
 # MAGIC        max(desc_customer) AS nome_cliente, max(desc_country_destination) AS pais_destino, max(desc_origin) AS origem
-# MAGIC FROM business_analytics.photo_risk_me
+# MAGIC FROM de_data_lake_prd.business_analytics.photo_risk_me
 # MAGIC GROUP BY numero_invoice, ano_faturamento
 
 # COMMAND ----------
@@ -224,7 +224,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC          paying_client_code AS cod_cliente_pagador, paying_client AS cliente_pagador,
 # MAGIC          paying_client_t_channel AS rma_cliente_pagador, comex_client_t_channel AS rma_cliente_comex,
 # MAGIC          ROW_NUMBER() OVER (PARTITION BY order_number ORDER BY order_date DESC) AS ordem
-# MAGIC   FROM pricing_models.tab_sales_history_dw
+# MAGIC   FROM de_data_lake_prd.pricing_models.tab_sales_history_dw
 # MAGIC   WHERE order_number IS NOT NULL
 # MAGIC   GROUP BY order_date, order_number, paying_client_code, paying_client, paying_client_t_channel, comex_client_t_channel
 # MAGIC )
@@ -252,8 +252,8 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC         b.dta_vencimento, a.payer_name AS nom_pagador,
 # MAGIC         a.kilograms_requested AS kgs_solicitado, a.kilograms_shipped AS kgs_embarcados,
 # MAGIC         CASE WHEN a.importer_name = a.payer_name THEN 1 ELSE 0 END AS flag_mesmo_nome
-# MAGIC     FROM business_analytics.flat_orders_external_market AS a
-# MAGIC     LEFT JOIN exportacao.dbcomfri_tab_pedido_comex_vencimento AS b ON b.num_pedido_comex = a.comex_order_number
+# MAGIC     FROM de_data_lake_prd.business_analytics.flat_orders_external_market AS a
+# MAGIC     LEFT JOIN de_data_lake_prd.exportacao.dbcomfri_tab_pedido_comex_vencimento AS b ON b.num_pedido_comex = a.comex_order_number
 # MAGIC     WHERE a.sales_confirmation_date >= '2019-07-01'
 # MAGIC ),
 # MAGIC cte_inicial AS (
@@ -265,8 +265,8 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC        WHEN UPPER(trp.des_risco_pagamento) IN ('RISCO MODERADO SEM GARANTIA', 'SEM RISCO A VISTA') THEN 'RISCO PERFORMANCE'
 # MAGIC   ELSE NULL END AS tipo_risco
 # MAGIC FROM cte_inicial AS a
-# MAGIC LEFT JOIN dados_mestres.dbcomfri_tab_forma_pagamento AS tfp ON tfp.cod_forma_pagamento = a.cod_forma_pagamento
-# MAGIC LEFT JOIN dados_mestres.dbfinanceiro_tab_risco_pagamento AS trp ON trp.cod_risco_pagamento = tfp.cod_risco_pagamento
+# MAGIC LEFT JOIN de_data_lake_prd.dados_mestres.dbcomfri_tab_forma_pagamento AS tfp ON tfp.cod_forma_pagamento = a.cod_forma_pagamento
+# MAGIC LEFT JOIN de_data_lake_prd.dados_mestres.dbfinanceiro_tab_risco_pagamento AS trp ON trp.cod_risco_pagamento = tfp.cod_risco_pagamento
 # MAGIC WHERE a.ordem = 1
 
 # COMMAND ----------
@@ -287,7 +287,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC   FROM (
 # MAGIC     SELECT customer_id, order_number, total_credit_note_value, received_dn_value, credit_note_number,
 # MAGIC            ROW_NUMBER() OVER (PARTITION BY credit_note_number ORDER BY order_number DESC) AS ordem
-# MAGIC     FROM business_analytics.claim_customer_service_br
+# MAGIC     FROM de_data_lake_prd.business_analytics.claim_customer_service_br
 # MAGIC     WHERE complaint_classification IN ('Restricao', 'Recuperação de despesa')
 # MAGIC       AND cn_process_status <> 'CN Cancelada' AND process_status <> 'Cancelada'
 # MAGIC       AND main_complaint_reason NOT IN ('Alteração de Legislação / Sem controle ', 'Cambio de Legislación / Sin control')
@@ -306,7 +306,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC        c.valor_total_credit_note,
 # MAGIC        c.valor_total_credit_note / COUNT(a.invoice_number) OVER (PARTITION BY a.invoice_number) AS vl_credit_note_rateio,
 # MAGIC        c.prejuizo_final / COUNT(a.invoice_number) OVER (PARTITION BY a.invoice_number) AS prejuizo_final_rateio
-# MAGIC FROM business_analytics.flat_financial_position_order_cambio_sys AS a
+# MAGIC FROM de_data_lake_prd.business_analytics.flat_financial_position_order_cambio_sys AS a
 # MAGIC LEFT JOIN cte_claim AS c ON c.numero_ordem = a.invoice_number
 # MAGIC LEFT JOIN view_principal_p_base_unificada AS e ON e.num_pedido_comex = a.invoice_number
 # MAGIC WHERE a.financial_position IN ('A RECEBER', 'JUDICIAL')
@@ -387,9 +387,9 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC     SELECT tp.cod_pessoa AS client_code, tp.nom_pessoa AS client_name,
 # MAGIC            tp.dta_nascimento AS company_foundation, tp.dta_cadastramento AS client_since,
 # MAGIC            tp.ind_alerta, tp.ind_blacklist
-# MAGIC     FROM dados_mestres.dbpessoa_tab_pessoa AS tp
-# MAGIC     INNER JOIN faturamento.dbpessoa_tab_analise_credito AS tac ON tac.cod_pessoa = tp.cod_pessoa
-# MAGIC     INNER JOIN dados_mestres.dbpessoa_tab_resultado_classificacao AS rc ON rc.num_proposta = tac.num_proposta
+# MAGIC     FROM de_data_lake_prd.dados_mestres.dbpessoa_tab_pessoa AS tp
+# MAGIC     INNER JOIN de_data_lake_prd.faturamento.dbpessoa_tab_analise_credito AS tac ON tac.cod_pessoa = tp.cod_pessoa
+# MAGIC     INNER JOIN de_data_lake_prd.dados_mestres.dbpessoa_tab_resultado_classificacao AS rc ON rc.num_proposta = tac.num_proposta
 # MAGIC     WHERE tp.ind_pessoa_inativa = 0 AND tp.ind_pessoa_estrangeira = 'S'
 # MAGIC     GROUP BY tp.cod_pessoa, tp.nom_pessoa, tp.dta_nascimento, tp.dta_cadastramento, tp.ind_alerta, tp.ind_blacklist
 # MAGIC )
@@ -679,8 +679,8 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # DBTITLE 1,DROP + CREATE portfolio_abt_group_me_br_v7
 # MAGIC %sql
-# MAGIC DROP TABLE IF EXISTS teste.portfolio_abt_group_me_br;
-# MAGIC CREATE TABLE teste.portfolio_abt_group_me_br (
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.default.portfolio_abt_group_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.default.portfolio_abt_group_me_br (
 # MAGIC   reference_month          DATE,
 # MAGIC   median_cluster_10        DOUBLE COMMENT 'Mediana 10-20% (escala %)',
 # MAGIC   median_cluster_20        DOUBLE COMMENT 'Mediana 20-30% (escala %)',
@@ -698,7 +698,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # DBTITLE 1,MERGE portfolio_abt_group_me_br_v7
 # MAGIC %sql
-# MAGIC MERGE INTO teste.portfolio_abt_group_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.default.portfolio_abt_group_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT m.safra AS reference_month,
 # MAGIC     m.mediana_cluster_10 AS median_cluster_10,
@@ -723,13 +723,13 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC
 # MAGIC %sql
 # MAGIC -- Replica cod_pessoa_cliente_grupo_economico do me_compiled (view_base_ultimo_mes_6)
-# MAGIC -- Fonte: dados_mestres.dbpessoa_tab_empresas_relacionadas, cod_tipo_relacionamento = 4
+# MAGIC -- Fonte: de_data_lake_prd.dados_mestres.dbpessoa_tab_empresas_relacionadas, cod_tipo_relacionamento = 4
 # MAGIC -- Regra: se cliente tem empresa pai, usa cod_pessoa_empresa_pai; senao usa cod_pessoa_cliente
 # MAGIC CREATE OR REPLACE TEMP VIEW view_grupo_economico AS
 # MAGIC SELECT
 # MAGIC   x.cod_pessoa_empresa_filha AS cod_pessoa_cliente,
 # MAGIC   MAX(x.cod_pessoa_empresa_pai)   AS cod_pessoa_empresa_pai
-# MAGIC FROM dados_mestres.dbpessoa_tab_empresas_relacionadas AS x
+# MAGIC FROM de_data_lake_prd.dados_mestres.dbpessoa_tab_empresas_relacionadas AS x
 # MAGIC WHERE x.cod_tipo_relacionamento = 4
 # MAGIC GROUP BY x.cod_pessoa_empresa_filha
 
@@ -758,7 +758,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC
 # MAGIC **`id_customer_group_economic`** = `cod_pessoa_cliente_grupo_economico` do motor:
 # MAGIC - `COALESCE(cod_pessoa_empresa_pai, cod_pessoa_cliente)`
-# MAGIC - Fonte: `dados_mestres.dbpessoa_tab_empresas_relacionadas` (cod_tipo_relacionamento = 4)
+# MAGIC - Fonte: `de_data_lake_prd.dados_mestres.dbpessoa_tab_empresas_relacionadas` (cod_tipo_relacionamento = 4)
 
 # COMMAND ----------
 
@@ -827,7 +827,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC         ELSE a.total_order_value
 # MAGIC       END
 # MAGIC     ) AS total_pedido_sem_fatura
-# MAGIC   FROM business_analytics.flat_orders_external_market AS a
+# MAGIC   FROM de_data_lake_prd.business_analytics.flat_orders_external_market AS a
 # MAGIC   LEFT JOIN view_taxas_cambio AS tc
 # MAGIC     ON  tc.data_taxa         = a.credit_approval_date
 # MAGIC     AND tc.moeda_procedencia = CASE WHEN a.currency_id = 'REAL' THEN 'BRL' ELSE a.currency_id END
@@ -952,7 +952,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # DBTITLE 1,MERGE abt_inference_me_br_v7
 # MAGIC %sql
-# MAGIC MERGE INTO teste.abt_inference_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.default.abt_inference_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT
 # MAGIC     CAST(cc.cod_pessoa_cliente AS INT) AS id_customer,
@@ -998,14 +998,14 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # DBTITLE 0,Sanity checks
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM teste.abt_inference_me_br) AS total_linhas,
-# MAGIC   (SELECT MIN(reference_month) FROM teste.abt_inference_me_br) AS safra_min,
-# MAGIC   (SELECT MAX(reference_month) FROM teste.abt_inference_me_br) AS safra_max,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM teste.abt_inference_me_br) AS total_safras,
-# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM teste.abt_inference_me_br) AS total_clientes,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.abt_inference_me_br) AS total_linhas,
+# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.default.abt_inference_me_br) AS safra_min,
+# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.default.abt_inference_me_br) AS safra_max,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.abt_inference_me_br) AS total_safras,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.default.abt_inference_me_br) AS total_clientes,
 # MAGIC   (SELECT COUNT(*) FROM (
 # MAGIC     SELECT reference_month, id_customer, COUNT(*) AS cnt
-# MAGIC     FROM teste.abt_inference_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
+# MAGIC     FROM ds_catalog_dev.default.abt_inference_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
 # MAGIC   )) AS duplicatas
 
 # COMMAND ----------
@@ -1015,7 +1015,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC   CASE WHEN reference_value = 0 THEN 'zerado' ELSE 'preenchido' END AS status_reference_value,
 # MAGIC   COUNT(*)                                                           AS qtd,
 # MAGIC   ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2)                 AS pct
-# MAGIC FROM teste.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
 # MAGIC GROUP BY 1
 # MAGIC ORDER BY 1
 
@@ -1028,6 +1028,6 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC   SUM(CASE WHEN reference_value = 0 THEN 1 ELSE 0 END)                       AS zerados,
 # MAGIC   ROUND(SUM(CASE WHEN reference_value = 0 THEN 1 ELSE 0 END) * 100.0
 # MAGIC         / COUNT(*), 2)                                                        AS pct_zerado
-# MAGIC FROM teste.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
 # MAGIC GROUP BY reference_month
 # MAGIC ORDER BY reference_month DESC

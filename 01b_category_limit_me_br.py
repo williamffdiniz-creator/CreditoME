@@ -12,8 +12,8 @@
 # MAGIC
 # MAGIC | Tabela | Janela de Dados | Descricao |
 # MAGIC |--------|-----------------|-----------|
-# MAGIC | `teste.category_limit_me_br` | **3 meses** | Limite por categoria (agregado trimestral) |
-# MAGIC | `teste.customer_top_category_me_br` | **24 meses** | Categoria principal por cliente no historico longo |
+# MAGIC | `ds_catalog_dev.default.category_limit_me_br` | **3 meses** | Limite por categoria (agregado trimestral) |
+# MAGIC | `ds_catalog_dev.default.customer_top_category_me_br` | **24 meses** | Categoria principal por cliente no historico longo |
 # MAGIC
 # MAGIC ---
 # MAGIC
@@ -38,7 +38,7 @@
 # MAGIC 1. **Mapeamento de categoria**: `order_type` → `categoria` via DE-PARA fixo (`tab_categorias`).
 # MAGIC    Tipos nao mapeados recebem prefixo `[NAO MAPEADO]` e pct_limite default de 0.03.
 # MAGIC
-# MAGIC 2. **Conversao cambial**: via `financeiro.dw_tab_parametro_cotacao_cambial`.
+# MAGIC 2. **Conversao cambial**: via `de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial`.
 # MAGIC    - EUR, AUD: multiplicam pela taxa (cotacao direta)
 # MAGIC    - CNY, AED, ARS, BRL: dividem pela taxa (cotacao indireta)
 # MAGIC    - CNY sem taxa disponivel: fallback fixo /7
@@ -131,9 +131,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,DDL — teste.category_limit_me_br
+# DBTITLE 0,DDL — ds_catalog_dev.default.category_limit_me_br
 # MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS teste.category_limit_me_br (
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.category_limit_me_br (
 # MAGIC   reference_quarter   DATE      COMMENT 'Safra trimestral — primeiro dia do mes de processamento / Quarterly vintage — first day of the processing month',
 # MAGIC   category            STRING    COMMENT 'Categoria do produto mapeada a partir do order_type / Product category mapped from order_type',
 # MAGIC   order_count         INT       COMMENT 'Quantidade de pedidos no trimestre / Number of orders in the quarter',
@@ -150,9 +150,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,DDL — teste.customer_top_category_me_br
+# DBTITLE 0,DDL — ds_catalog_dev.default.customer_top_category_me_br
 # MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS teste.customer_top_category_me_br (
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.customer_top_category_me_br (
 # MAGIC   reference_quarter         DATE      COMMENT 'Safra — primeiro dia do mes de processamento / Vintage — first day of the processing month',
 # MAGIC   customer_name             STRING    COMMENT 'Nome do cliente (importer_name) / Customer name (importer_name)',
 # MAGIC   customer_code             INT       COMMENT 'Codigo do cliente (importer_id) / Customer code (importer_id)',
@@ -176,7 +176,7 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # MAGIC --
 # MAGIC -- Regras de negocio (origem: limite_por_categoria_pedido_v5):
 # MAGIC --   1. Mapeamento order_type → categoria via tab_categorias (DE-PARA fixo)
-# MAGIC --   2. Conversao cambial via financeiro.dw_tab_parametro_cotacao_cambial
+# MAGIC --   2. Conversao cambial via de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial
 # MAGIC --      - EUR, AUD: multiplicam pela taxa (cotacao direta)
 # MAGIC --      - CNY, AED, ARS, BRL: dividem pela taxa (cotacao indireta)
 # MAGIC --      - CNY sem taxa: fallback fixo /7
@@ -216,7 +216,7 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # MAGIC     CAST(valido_desde AS DATE) AS valido_desde,
 # MAGIC     CAST(valido_ate   AS DATE) AS valido_ate,
 # MAGIC     TRY_CAST(REPLACE(REPLACE(taxa_cambio, '/', ''), ',', '.') AS FLOAT) AS taxa_cambio
-# MAGIC   FROM financeiro.dw_tab_parametro_cotacao_cambial
+# MAGIC   FROM de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial
 # MAGIC   WHERE moeda_procedencia IN ('AUD', 'EUR', 'CNY', 'AED', 'ARS', 'BRL')
 # MAGIC     AND moeda_destino = 'USD'
 # MAGIC     AND CONCAT(ctg_taxa_cambio, '-', moeda_procedencia) IN (
@@ -247,7 +247,7 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # MAGIC     WHEN o.currency_id = 'AUD'  AND tx.taxa_cambio IS NOT NULL THEN ROUND(o.total_order_value * tx.taxa_cambio, 2)
 # MAGIC     ELSE o.total_order_value
 # MAGIC   END AS valor_usd
-# MAGIC FROM business_analytics.flat_orders_external_market o
+# MAGIC FROM de_data_lake_prd.business_analytics.flat_orders_external_market o
 # MAGIC CROSS JOIN config_safra_trimestral cfg
 # MAGIC LEFT JOIN tab_categorias tc ON tc.order_type = o.order_type
 # MAGIC LEFT JOIN taxas_raw tx
@@ -319,7 +319,7 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # MAGIC     CAST(valido_desde AS DATE) AS valido_desde,
 # MAGIC     CAST(valido_ate   AS DATE) AS valido_ate,
 # MAGIC     TRY_CAST(REPLACE(REPLACE(taxa_cambio, '/', ''), ',', '.') AS FLOAT) AS taxa_cambio
-# MAGIC   FROM financeiro.dw_tab_parametro_cotacao_cambial
+# MAGIC   FROM de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial
 # MAGIC   WHERE moeda_procedencia IN ('AUD', 'EUR', 'CNY', 'AED', 'ARS', 'BRL')
 # MAGIC     AND moeda_destino = 'USD'
 # MAGIC     AND CONCAT(ctg_taxa_cambio, '-', moeda_procedencia) IN (
@@ -350,7 +350,7 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # MAGIC     WHEN o.currency_id = 'AUD'  AND tx.taxa_cambio IS NOT NULL THEN ROUND(o.total_order_value * tx.taxa_cambio, 2)
 # MAGIC     ELSE o.total_order_value
 # MAGIC   END AS valor_usd
-# MAGIC FROM business_analytics.flat_orders_external_market o
+# MAGIC FROM de_data_lake_prd.business_analytics.flat_orders_external_market o
 # MAGIC CROSS JOIN config_safra_24m cfg
 # MAGIC LEFT JOIN tab_categorias tc ON tc.order_type = o.order_type
 # MAGIC LEFT JOIN taxas_raw tx
@@ -380,9 +380,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,MERGE — teste.category_limit_me_br
+# DBTITLE 0,MERGE — ds_catalog_dev.default.category_limit_me_br
 # MAGIC %sql
-# MAGIC MERGE INTO teste.category_limit_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.default.category_limit_me_br AS target
 # MAGIC USING (
 # MAGIC   WITH agg_category AS (
 # MAGIC     SELECT
@@ -417,21 +417,21 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # DBTITLE 0,View: grupo economico (id_customer_group_economic — logica me_compiled)
 # MAGIC %sql
 # MAGIC -- Replica cod_pessoa_cliente_grupo_economico do me_compiled (view_base_ultimo_mes_6)
-# MAGIC -- Fonte: dados_mestres.dbpessoa_tab_empresas_relacionadas, cod_tipo_relacionamento = 4
+# MAGIC -- Fonte: de_data_lake_prd.dados_mestres.dbpessoa_tab_empresas_relacionadas, cod_tipo_relacionamento = 4
 # MAGIC -- Regra: se cliente tem empresa pai, usa cod_pessoa_empresa_pai; senao usa cod_pessoa_cliente
 # MAGIC CREATE OR REPLACE TEMP VIEW view_grupo_economico_cat AS
 # MAGIC SELECT
 # MAGIC   x.cod_pessoa_empresa_filha AS cod_pessoa_cliente,
 # MAGIC   MAX(x.cod_pessoa_empresa_pai) AS cod_pessoa_empresa_pai
-# MAGIC FROM dados_mestres.dbpessoa_tab_empresas_relacionadas AS x
+# MAGIC FROM de_data_lake_prd.dados_mestres.dbpessoa_tab_empresas_relacionadas AS x
 # MAGIC WHERE x.cod_tipo_relacionamento = 4
 # MAGIC GROUP BY x.cod_pessoa_empresa_filha
 
 # COMMAND ----------
 
-# DBTITLE 0,MERGE — teste.customer_top_category_me_br
+# DBTITLE 0,MERGE — ds_catalog_dev.default.customer_top_category_me_br
 # MAGIC %sql
-# MAGIC MERGE INTO teste.customer_top_category_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.default.customer_top_category_me_br AS target
 # MAGIC USING (
 # MAGIC   WITH customer_category_sales AS (
 # MAGIC     SELECT
@@ -476,4 +476,4 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select * from teste.category_limit_me_br
+# MAGIC select * from ds_catalog_dev.default.category_limit_me_br

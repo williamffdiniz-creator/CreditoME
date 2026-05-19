@@ -23,8 +23,8 @@ print(f"Data de referencia: {effective_date}")
 
 # DBTITLE 0,DROP + CREATE targets_me_br_v7
 # MAGIC %sql
-# MAGIC DROP TABLE IF EXISTS teste.targets_me_br;
-# MAGIC CREATE TABLE teste.targets_me_br (
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.default.targets_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.default.targets_me_br (
 # MAGIC   id_customer        INT,
 # MAGIC   customer_name      STRING,
 # MAGIC   country            STRING,
@@ -55,7 +55,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC %sql
 # MAGIC SELECT CASE WHEN COUNT(*) = 0 THEN 'ERRO: abt_inference_me_br vazia'
 # MAGIC   ELSE CONCAT('OK: ', COUNT(*), ' linhas') END AS status
-# MAGIC FROM teste.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
 
 # COMMAND ----------
 
@@ -63,10 +63,10 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC %sql
 # MAGIC CREATE OR REPLACE TEMP VIEW base_completa AS
 # MAGIC SELECT reference_month, id_customer, customer_name, country
-# MAGIC FROM teste.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
 # MAGIC WHERE reference_month >= LEAST(
 # MAGIC   add_months(date_trunc('month', current_date()), -24),
-# MAGIC   COALESCE(add_months((SELECT MAX(reference_month) FROM teste.targets_me_br), -1), DATE '1900-01-01'))
+# MAGIC   COALESCE(add_months((SELECT MAX(reference_month) FROM ds_catalog_dev.default.targets_me_br), -1), DATE '1900-01-01'))
 
 # COMMAND ----------
 
@@ -83,7 +83,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC          CAST(valido_desde AS DATE) AS valido_desde,
 # MAGIC          TRY_CAST(REPLACE(REPLACE(taxa_cambio, '/', ''), ',', '.') AS FLOAT) AS taxa_cambio,
 # MAGIC          CAST(valido_ate AS DATE) AS valido_ate
-# MAGIC   FROM financeiro.dw_tab_parametro_cotacao_cambial
+# MAGIC   FROM de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial
 # MAGIC   WHERE moeda_procedencia IN ('AUD', 'EUR', 'CNY', 'AED', 'ARS', 'BRL')
 # MAGIC     AND moeda_destino = 'USD'
 # MAGIC     AND CONCAT(ctg_taxa_cambio, '-', moeda_procedencia) IN (
@@ -123,8 +123,8 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC         b.dta_vencimento, a.payer_name AS nom_pagador,
 # MAGIC         a.kilograms_requested AS kgs_solicitado, a.kilograms_shipped AS kgs_embarcados,
 # MAGIC         CASE WHEN a.importer_name = a.payer_name THEN 1 ELSE 0 END AS flag_mesmo_nome
-# MAGIC     FROM business_analytics.flat_orders_external_market AS a
-# MAGIC     LEFT JOIN exportacao.dbcomfri_tab_pedido_comex_vencimento AS b ON b.num_pedido_comex = a.comex_order_number
+# MAGIC     FROM de_data_lake_prd.business_analytics.flat_orders_external_market AS a
+# MAGIC     LEFT JOIN de_data_lake_prd.exportacao.dbcomfri_tab_pedido_comex_vencimento AS b ON b.num_pedido_comex = a.comex_order_number
 # MAGIC     WHERE a.sales_confirmation_date >= '2019-07-01'
 # MAGIC ),
 # MAGIC cte_inicial AS (
@@ -136,8 +136,8 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC        WHEN UPPER(trp.des_risco_pagamento) IN ('RISCO MODERADO SEM GARANTIA', 'SEM RISCO A VISTA') THEN 'RISCO PERFORMANCE'
 # MAGIC   ELSE NULL END AS tipo_risco
 # MAGIC FROM cte_inicial AS a
-# MAGIC LEFT JOIN dados_mestres.dbcomfri_tab_forma_pagamento AS tfp ON tfp.cod_forma_pagamento = a.cod_forma_pagamento
-# MAGIC LEFT JOIN dados_mestres.dbfinanceiro_tab_risco_pagamento AS trp ON trp.cod_risco_pagamento = tfp.cod_risco_pagamento
+# MAGIC LEFT JOIN de_data_lake_prd.dados_mestres.dbcomfri_tab_forma_pagamento AS tfp ON tfp.cod_forma_pagamento = a.cod_forma_pagamento
+# MAGIC LEFT JOIN de_data_lake_prd.dados_mestres.dbfinanceiro_tab_risco_pagamento AS trp ON trp.cod_risco_pagamento = tfp.cod_risco_pagamento
 # MAGIC WHERE a.ordem = 1
 
 # COMMAND ----------
@@ -153,7 +153,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC   FROM (
 # MAGIC     SELECT customer_id, order_number, total_credit_note_value, received_dn_value, credit_note_number,
 # MAGIC            ROW_NUMBER() OVER (PARTITION BY credit_note_number ORDER BY order_number DESC) AS ordem
-# MAGIC     FROM business_analytics.claim_customer_service_br
+# MAGIC     FROM de_data_lake_prd.business_analytics.claim_customer_service_br
 # MAGIC     WHERE complaint_classification IN ('Restricao', 'Recuperação de despesa')
 # MAGIC       AND cn_process_status <> 'CN Cancelada' AND process_status <> 'Cancelada'
 # MAGIC       AND main_complaint_reason NOT IN ('Alteração de Legislação / Sem controle ', 'Cambio de Legislación / Sin control')
@@ -172,7 +172,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC        c.valor_total_credit_note,
 # MAGIC        c.valor_total_credit_note / COUNT(a.invoice_number) OVER (PARTITION BY a.invoice_number) AS vl_credit_note_rateio,
 # MAGIC        c.prejuizo_final / COUNT(a.invoice_number) OVER (PARTITION BY a.invoice_number) AS prejuizo_final_rateio
-# MAGIC FROM business_analytics.flat_financial_position_order_cambio_sys AS a
+# MAGIC FROM de_data_lake_prd.business_analytics.flat_financial_position_order_cambio_sys AS a
 # MAGIC LEFT JOIN cte_claim AS c ON c.numero_ordem = a.invoice_number
 # MAGIC LEFT JOIN view_principal_p_base_unificada AS e ON e.num_pedido_comex = a.invoice_number
 # MAGIC WHERE a.financial_position IN ('A RECEBER', 'JUDICIAL')
@@ -298,7 +298,7 @@ print(f"Data de referencia: {effective_date}")
 
 # DBTITLE 0,MERGE retroativo
 # MAGIC %sql
-# MAGIC MERGE INTO teste.targets_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.default.targets_me_br AS target
 # MAGIC USING (SELECT *, current_timestamp() AS updated_at FROM targets_percentmob) AS source
 # MAGIC ON target.reference_month = source.reference_month AND target.id_customer = source.id_customer
 # MAGIC WHEN MATCHED THEN UPDATE SET *
@@ -309,14 +309,14 @@ print(f"Data de referencia: {effective_date}")
 # DBTITLE 0,Sanity checks
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM teste.targets_me_br) AS total_linhas,
-# MAGIC   (SELECT MIN(reference_month) FROM teste.targets_me_br) AS safra_min,
-# MAGIC   (SELECT MAX(reference_month) FROM teste.targets_me_br) AS safra_max,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM teste.targets_me_br) AS total_safras,
-# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM teste.targets_me_br) AS total_clientes,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.targets_me_br) AS total_linhas,
+# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.default.targets_me_br) AS safra_min,
+# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.default.targets_me_br) AS safra_max,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.targets_me_br) AS total_safras,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.default.targets_me_br) AS total_clientes,
 # MAGIC   (SELECT COUNT(*) FROM (
 # MAGIC     SELECT reference_month, id_customer, COUNT(*) AS cnt
-# MAGIC     FROM teste.targets_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
+# MAGIC     FROM ds_catalog_dev.default.targets_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
 # MAGIC   )) AS duplicatas
 
 # COMMAND ----------
@@ -332,7 +332,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC   ROUND(SUM(billed_1m), 2) AS total_billed_1m,
 # MAGIC   --ROUND(SUM(overdue_amount_1m), 2) AS total_overdue_1m,
 # MAGIC   MAX(updated_at) AS ultima_atualizacao
-# MAGIC FROM teste.targets_me_br
+# MAGIC FROM ds_catalog_dev.default.targets_me_br
 # MAGIC GROUP BY reference_month
 # MAGIC ORDER BY reference_month DESC
 
@@ -349,6 +349,6 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC   ROUND(SUM(billed_1m), 2) AS total_billed_1m,
 # MAGIC   --ROUND(SUM(overdue_amount_1m), 2) AS total_overdue_1m,
 # MAGIC   MAX(updated_at) AS ultima_atualizacao
-# MAGIC FROM teste.targets_me_br
+# MAGIC FROM ds_catalog_dev.default.targets_me_br
 # MAGIC GROUP BY reference_month
 # MAGIC ORDER BY reference_month DESC
