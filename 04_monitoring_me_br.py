@@ -558,7 +558,7 @@ for period in periods:
             (_bi, period, round(float(_contrib), 6), MARKET_NAME,
              "iep_por_decil", ry, rm, NOW))
     rows["iep_por_decil"].append(
-        (100, period, round(_total_psi, 6), MARKET_NAME,
+        (100, period, round(float(_total_psi), 6), MARKET_NAME,
          "iep_por_decil", ry, rm, NOW))
 
     # ---------- bad rate por banda + diff pp ----------
