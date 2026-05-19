@@ -23,8 +23,8 @@ print(f"Data de referencia: {effective_date}")
 
 # DBTITLE 0,DROP + CREATE targets_me_br_v7
 # MAGIC %sql
-# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.default.targets_me_br;
-# MAGIC CREATE TABLE ds_catalog_dev.default.targets_me_br (
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.targets_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.targets_me_br (
 # MAGIC   id_customer        INT,
 # MAGIC   customer_name      STRING,
 # MAGIC   country            STRING,
@@ -55,7 +55,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC %sql
 # MAGIC SELECT CASE WHEN COUNT(*) = 0 THEN 'ERRO: abt_inference_me_br vazia'
 # MAGIC   ELSE CONCAT('OK: ', COUNT(*), ' linhas') END AS status
-# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 
 # COMMAND ----------
 
@@ -63,10 +63,10 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC %sql
 # MAGIC CREATE OR REPLACE TEMP VIEW base_completa AS
 # MAGIC SELECT reference_month, id_customer, customer_name, country
-# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC WHERE reference_month >= LEAST(
 # MAGIC   add_months(date_trunc('month', current_date()), -24),
-# MAGIC   COALESCE(add_months((SELECT MAX(reference_month) FROM ds_catalog_dev.default.targets_me_br), -1), DATE '1900-01-01'))
+# MAGIC   COALESCE(add_months((SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.targets_me_br), -1), DATE '1900-01-01'))
 
 # COMMAND ----------
 
@@ -298,7 +298,7 @@ print(f"Data de referencia: {effective_date}")
 
 # DBTITLE 0,MERGE retroativo
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.targets_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.targets_me_br AS target
 # MAGIC USING (SELECT *, current_timestamp() AS updated_at FROM targets_percentmob) AS source
 # MAGIC ON target.reference_month = source.reference_month AND target.id_customer = source.id_customer
 # MAGIC WHEN MATCHED THEN UPDATE SET *
@@ -309,14 +309,14 @@ print(f"Data de referencia: {effective_date}")
 # DBTITLE 0,Sanity checks
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.targets_me_br) AS total_linhas,
-# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.default.targets_me_br) AS safra_min,
-# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.default.targets_me_br) AS safra_max,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.targets_me_br) AS total_safras,
-# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.default.targets_me_br) AS total_clientes,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.targets_me_br) AS total_linhas,
+# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.credit_engine.targets_me_br) AS safra_min,
+# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.targets_me_br) AS safra_max,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.targets_me_br) AS total_safras,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.credit_engine.targets_me_br) AS total_clientes,
 # MAGIC   (SELECT COUNT(*) FROM (
 # MAGIC     SELECT reference_month, id_customer, COUNT(*) AS cnt
-# MAGIC     FROM ds_catalog_dev.default.targets_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
+# MAGIC     FROM ds_catalog_dev.credit_engine.targets_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
 # MAGIC   )) AS duplicatas
 
 # COMMAND ----------
@@ -332,7 +332,7 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC   ROUND(SUM(billed_1m), 2) AS total_billed_1m,
 # MAGIC   --ROUND(SUM(overdue_amount_1m), 2) AS total_overdue_1m,
 # MAGIC   MAX(updated_at) AS ultima_atualizacao
-# MAGIC FROM ds_catalog_dev.default.targets_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.targets_me_br
 # MAGIC GROUP BY reference_month
 # MAGIC ORDER BY reference_month DESC
 
@@ -349,6 +349,6 @@ print(f"Data de referencia: {effective_date}")
 # MAGIC   ROUND(SUM(billed_1m), 2) AS total_billed_1m,
 # MAGIC   --ROUND(SUM(overdue_amount_1m), 2) AS total_overdue_1m,
 # MAGIC   MAX(updated_at) AS ultima_atualizacao
-# MAGIC FROM ds_catalog_dev.default.targets_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.targets_me_br
 # MAGIC GROUP BY reference_month
 # MAGIC ORDER BY reference_month DESC

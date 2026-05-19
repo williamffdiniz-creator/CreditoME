@@ -9,7 +9,7 @@
 # MAGIC
 # MAGIC ### Passo 1 — Score Integrado (MI + ME)
 # MAGIC
-# MAGIC Consome `ds_catalog_dev.default.integrated_score_chile` (produzida pelo NB02b do pipeline Chile)
+# MAGIC Consome `ds_catalog_dev.credit_engine.integrated_score_chile` (produzida pelo NB02b do pipeline Chile)
 # MAGIC e atualiza 9 colunas nos clientes presentes em ambos os mercados.
 # MAGIC Clientes apenas-ME nao sao tocados neste passo.
 # MAGIC
@@ -69,10 +69,10 @@
 # MAGIC
 # MAGIC ### Dependencias
 # MAGIC
-# MAGIC - `ds_catalog_dev.default.integrated_score_chile` (NB02b Chile) — scores e limites MI+ME
-# MAGIC - `ds_catalog_dev.default.apply_model_me_br` (NB02 ME BR) — tabela destino de ambos os MERGEs
-# MAGIC - `ds_catalog_dev.default.customer_top_category_me_br` (NB01b) — categoria principal por cliente/trimestre
-# MAGIC - `ds_catalog_dev.default.category_limit_me_br` (NB01b) — teto de limite por categoria/trimestre
+# MAGIC - `ds_catalog_dev.credit_engine.integrated_score_chile` (NB02b Chile) — scores e limites MI+ME
+# MAGIC - `ds_catalog_dev.credit_engine.apply_model_me_br` (NB02 ME BR) — tabela destino de ambos os MERGEs
+# MAGIC - `ds_catalog_dev.credit_engine.customer_top_category_me_br` (NB01b) — categoria principal por cliente/trimestre
+# MAGIC - `ds_catalog_dev.credit_engine.category_limit_me_br` (NB01b) — teto de limite por categoria/trimestre
 # MAGIC - `de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial` — taxa CLP/USD para conversao do teto
 
 # COMMAND ----------
@@ -93,25 +93,25 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # DBTITLE 1,Pre-check: validar dependencias
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.integrated_score_chile)                     AS isc_total_linhas,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.integrated_score_chile)                     AS isc_total_linhas,
 # MAGIC   (SELECT CAST(MAX(reference_month) AS STRING)
-# MAGIC    FROM ds_catalog_dev.default.integrated_score_chile)                                     AS isc_safra_max,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br)                          AS me_total_linhas,
+# MAGIC    FROM ds_catalog_dev.credit_engine.integrated_score_chile)                                     AS isc_safra_max,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br)                          AS me_total_linhas,
 # MAGIC   (SELECT CAST(MAX(reference_month) AS STRING)
-# MAGIC    FROM ds_catalog_dev.default.apply_model_me_br)                                          AS me_safra_max,
+# MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br)                                          AS me_safra_max,
 # MAGIC   -- Clientes em comum esperados no Passo 1
 # MAGIC   (SELECT COUNT(DISTINCT isc.id_customer_me)
-# MAGIC    FROM ds_catalog_dev.default.integrated_score_chile isc
-# MAGIC    INNER JOIN ds_catalog_dev.default.apply_model_me_br me
+# MAGIC    FROM ds_catalog_dev.credit_engine.integrated_score_chile isc
+# MAGIC    INNER JOIN ds_catalog_dev.credit_engine.apply_model_me_br me
 # MAGIC      ON isc.id_customer_me = me.id_customer
 # MAGIC     AND isc.reference_month = me.reference_month)                         AS clientes_passo1_atualizar,
 # MAGIC   -- Disponibilidade dos dados de categoria
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.customer_top_category_me_br)                AS ctc_total_linhas,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.customer_top_category_me_br)                AS ctc_total_linhas,
 # MAGIC   (SELECT CAST(MAX(reference_quarter) AS STRING)
-# MAGIC    FROM ds_catalog_dev.default.customer_top_category_me_br)                                AS ctc_trimestre_max,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.category_limit_me_br)                       AS cl_total_linhas,
+# MAGIC    FROM ds_catalog_dev.credit_engine.customer_top_category_me_br)                                AS ctc_trimestre_max,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.category_limit_me_br)                       AS cl_total_linhas,
 # MAGIC   (SELECT CAST(MAX(reference_quarter) AS STRING)
-# MAGIC    FROM ds_catalog_dev.default.category_limit_me_br)                                       AS cl_trimestre_max
+# MAGIC    FROM ds_catalog_dev.credit_engine.category_limit_me_br)                                       AS cl_trimestre_max
 
 # COMMAND ----------
 
@@ -125,7 +125,7 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC -- Clientes apenas-ME nao sao tocados: mantem integrated_score = adjusted_score.
 # MAGIC -- Idempotente: re-execucoes sobrescrevem com os mesmos valores.
 # MAGIC -- ====================================================================
-# MAGIC MERGE INTO ds_catalog_dev.default.apply_model_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.apply_model_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT
 # MAGIC     id_customer_mi,
@@ -138,7 +138,7 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC     adjusted_score_mi,
 # MAGIC     limit_mi_usd,
 # MAGIC     limit_mi_clp
-# MAGIC   FROM ds_catalog_dev.default.integrated_score_chile
+# MAGIC   FROM ds_catalog_dev.credit_engine.integrated_score_chile
 # MAGIC ) AS source
 # MAGIC ON target.id_customer     = source.id_customer_me
 # MAGIC    AND target.reference_month = source.reference_month
@@ -243,8 +243,8 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC     ctc.reference_quarter,
 # MAGIC     ctc.top_category,
 # MAGIC     cl.category_limit_usd
-# MAGIC   FROM ds_catalog_dev.default.customer_top_category_me_br ctc
-# MAGIC   LEFT JOIN ds_catalog_dev.default.category_limit_me_br cl
+# MAGIC   FROM ds_catalog_dev.credit_engine.customer_top_category_me_br ctc
+# MAGIC   LEFT JOIN ds_catalog_dev.credit_engine.category_limit_me_br cl
 # MAGIC     ON  ctc.top_category      = cl.category
 # MAGIC     AND ctc.reference_quarter = cl.reference_quarter
 # MAGIC ),
@@ -291,7 +291,7 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC --
 # MAGIC -- Idempotente: re-execucoes recalculam com os mesmos valores.
 # MAGIC -- ====================================================================
-# MAGIC MERGE INTO ds_catalog_dev.default.apply_model_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.apply_model_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT
 # MAGIC     am.id_customer,
@@ -310,7 +310,7 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC         COALESCE(ct.teto_categoria_ge_usd * taxa.taxa_clp_usd, am.credit_limit_clp)
 # MAGIC       ),
 # MAGIC     4) AS credit_limit_end_clp
-# MAGIC   FROM ds_catalog_dev.default.apply_model_me_br am
+# MAGIC   FROM ds_catalog_dev.credit_engine.apply_model_me_br am
 # MAGIC   -- Join direto: reference_month = reference_quarter (mesmo espaco mensal m+1)
 # MAGIC   LEFT JOIN category_teto_ge ct
 # MAGIC     ON  am.id_customer        = ct.id_customer
@@ -333,65 +333,65 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC -- ====================================================================
 # MAGIC SELECT
 # MAGIC   -- Volume
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br)                          AS total_linhas,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.apply_model_me_br)   AS total_safras,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br)                          AS total_linhas,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)   AS total_safras,
 # MAGIC   (SELECT CAST(MAX(reference_month) AS STRING)
-# MAGIC    FROM ds_catalog_dev.default.apply_model_me_br)                                          AS safra_max,
+# MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br)                                          AS safra_max,
 # MAGIC
 # MAGIC   -- PASSO 1: clientes MI+ME vs apenas-ME
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE limit_mi_usd IS NOT NULL)                                        AS clientes_mi_me,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE limit_mi_usd IS NULL)                                            AS clientes_apenas_me,
 # MAGIC
 # MAGIC   -- PASSO 1: qualidade do integrated_score
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE integrated_score IS NULL)                                        AS nulls_integrated_score,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE integrated_score < 0 OR integrated_score > 1)                   AS integrated_score_out_of_range,
 # MAGIC
 # MAGIC   -- PASSO 2: cobertura de credit_limit_end
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NOT NULL)                                    AS clientes_com_credit_limit_end,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NULL)                                        AS clientes_sem_credit_limit_end,
 # MAGIC
 # MAGIC   -- PASSO 2: quantos tiveram o limite capado pela categoria
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end < credit_limit
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br))
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS clientes_capados_ultima_safra,
 # MAGIC   -- PASSO 2: quantos nao foram afetados pelo cap (limite ja abaixo do teto)
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end = credit_limit
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br))
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS clientes_abaixo_teto_ultima_safra,
 # MAGIC
 # MAGIC   -- Medias de limite para validacao de magnitude
-# MAGIC   (SELECT ROUND(AVG(credit_limit), 2) FROM ds_catalog_dev.default.apply_model_me_br
-# MAGIC    WHERE reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br))
+# MAGIC   (SELECT ROUND(AVG(credit_limit), 2) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS avg_credit_limit,
-# MAGIC   (SELECT ROUND(AVG(credit_limit_end), 2) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT ROUND(AVG(credit_limit_end), 2) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NOT NULL
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br))
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS avg_credit_limit_end,
 # MAGIC
 # MAGIC   -- Alinhamento com integrated_score_chile (Passo 1)
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.integrated_score_chile
-# MAGIC    WHERE reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.integrated_score_chile))
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.integrated_score_chile
+# MAGIC    WHERE reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.integrated_score_chile))
 # MAGIC                                                                           AS isc_clientes_ultima_safra,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE limit_mi_usd IS NOT NULL
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br))
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS me_clientes_mi_me_ultima_safra,
 # MAGIC
 # MAGIC   -- PASSO 1: market_scope e id_customer_mi
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE market_scope = 'MI_CHILE')                                       AS clientes_market_scope_mi_chile,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE id_customer_mi IS NOT NULL)                                      AS clientes_com_id_customer_mi,
 # MAGIC   -- Consistencia: market_scope e id_customer_mi devem ser preenchidos juntos
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE (market_scope IS NOT NULL AND id_customer_mi IS NULL)
 # MAGIC       OR (market_scope IS NULL AND id_customer_mi IS NOT NULL))           AS inconsistencias_market_scope
 
@@ -412,13 +412,13 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC   CASE WHEN limit_mi_usd IS NOT NULL THEN 'MI+ME' ELSE 'Apenas-ME' END AS tipo_cliente,
 # MAGIC   market_scope,
 # MAGIC   id_customer_mi
-# MAGIC FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC WHERE credit_limit_end < credit_limit
-# MAGIC   AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br)
+# MAGIC   AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)
 # MAGIC ORDER BY reducao_usd DESC
 # MAGIC LIMIT 50
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select * from ds_catalog_dev.default.apply_model_me_br
+# MAGIC select * from ds_catalog_dev.credit_engine.apply_model_me_br

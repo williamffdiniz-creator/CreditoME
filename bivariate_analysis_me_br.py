@@ -740,7 +740,7 @@ query = """
         ELSE '3-HIGH'
         END AS score_band,
         IF(reference_month >= '2024-01-01', 1, 0) AS oot
-   FROM ds_catalog_dev.default.monitoring_me_br
+   FROM ds_catalog_dev.credit_engine.monitoring_me_br
   WHERE target_percent7mob1 IS NOT NULL
     AND reference_month >= '2022-01-01'
 """
@@ -1180,7 +1180,7 @@ print(metrics_performance.to_string(index=False))
 # MAGIC   SUM(target_percent7mob1)                                          AS total_bad,
 # MAGIC   ROUND(SUM(target_percent7mob1) * 100.0 / COUNT(*), 2)            AS bad_rate_pct,
 # MAGIC   ROUND(SUM(target_overdue_1m) / NULLIF(SUM(target_billed_1m), 0) * 100, 2) AS overdue_pct_1m
-# MAGIC FROM ds_catalog_dev.default.monitoring_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_me_br
 # MAGIC WHERE target_percent7mob1 IS NOT NULL
 # MAGIC   AND reference_month >= '2022-01-01'
 # MAGIC GROUP BY reference_month
@@ -1211,11 +1211,11 @@ print(metrics_performance.to_string(index=False))
 # MAGIC         pct_months_overdue_20_30 AS 20_30,	
 # MAGIC         pct_months_overdue_30_50 AS 30_50,	
 # MAGIC         pct_months_overdue_50_plus AS 50_plus
-# MAGIC    FROM ds_catalog_dev.default.monitoring_me_br
+# MAGIC    FROM ds_catalog_dev.credit_engine.monitoring_me_br
 # MAGIC   --WHERE target_percent7mob1 IS NOT NULL
 # MAGIC     WHERE reference_month >= '2022-01-01' and id_customer = '129719'
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select * from ds_catalog_dev.default.monitoring_me_br
+# MAGIC select * from ds_catalog_dev.credit_engine.monitoring_me_br

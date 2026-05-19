@@ -12,8 +12,8 @@
 # MAGIC
 # MAGIC | Tabela | Janela de Dados | Descricao |
 # MAGIC |--------|-----------------|-----------|
-# MAGIC | `ds_catalog_dev.default.category_limit_me_br` | **3 meses** | Limite por categoria (agregado trimestral) |
-# MAGIC | `ds_catalog_dev.default.customer_top_category_me_br` | **24 meses** | Categoria principal por cliente no historico longo |
+# MAGIC | `ds_catalog_dev.credit_engine.category_limit_me_br` | **3 meses** | Limite por categoria (agregado trimestral) |
+# MAGIC | `ds_catalog_dev.credit_engine.customer_top_category_me_br` | **24 meses** | Categoria principal por cliente no historico longo |
 # MAGIC
 # MAGIC ---
 # MAGIC
@@ -131,9 +131,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,DDL — ds_catalog_dev.default.category_limit_me_br
+# DBTITLE 0,DDL — ds_catalog_dev.credit_engine.category_limit_me_br
 # MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.category_limit_me_br (
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.category_limit_me_br (
 # MAGIC   reference_quarter   DATE      COMMENT 'Safra trimestral — primeiro dia do mes de processamento / Quarterly vintage — first day of the processing month',
 # MAGIC   category            STRING    COMMENT 'Categoria do produto mapeada a partir do order_type / Product category mapped from order_type',
 # MAGIC   order_count         INT       COMMENT 'Quantidade de pedidos no trimestre / Number of orders in the quarter',
@@ -150,9 +150,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,DDL — ds_catalog_dev.default.customer_top_category_me_br
+# DBTITLE 0,DDL — ds_catalog_dev.credit_engine.customer_top_category_me_br
 # MAGIC %sql
-# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.customer_top_category_me_br (
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.customer_top_category_me_br (
 # MAGIC   reference_quarter         DATE      COMMENT 'Safra — primeiro dia do mes de processamento / Vintage — first day of the processing month',
 # MAGIC   customer_name             STRING    COMMENT 'Nome do cliente (importer_name) / Customer name (importer_name)',
 # MAGIC   customer_code             INT       COMMENT 'Codigo do cliente (importer_id) / Customer code (importer_id)',
@@ -380,9 +380,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,MERGE — ds_catalog_dev.default.category_limit_me_br
+# DBTITLE 0,MERGE — ds_catalog_dev.credit_engine.category_limit_me_br
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.category_limit_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.category_limit_me_br AS target
 # MAGIC USING (
 # MAGIC   WITH agg_category AS (
 # MAGIC     SELECT
@@ -429,9 +429,9 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 
 # COMMAND ----------
 
-# DBTITLE 0,MERGE — ds_catalog_dev.default.customer_top_category_me_br
+# DBTITLE 0,MERGE — ds_catalog_dev.credit_engine.customer_top_category_me_br
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.customer_top_category_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.customer_top_category_me_br AS target
 # MAGIC USING (
 # MAGIC   WITH customer_category_sales AS (
 # MAGIC     SELECT
@@ -476,4 +476,4 @@ spark.sql("SELECT * FROM config_safra_24m").show(truncate=False)
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select * from ds_catalog_dev.default.category_limit_me_br
+# MAGIC select * from ds_catalog_dev.credit_engine.category_limit_me_br

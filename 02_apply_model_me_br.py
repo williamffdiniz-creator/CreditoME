@@ -56,12 +56,12 @@
 # MAGIC
 # MAGIC ### Dependencias
 # MAGIC
-# MAGIC - `ds_catalog_dev.default.abt_inference_me_br` (NB1) — features e scores individuais
-# MAGIC - `ds_catalog_dev.default.portfolio_abt_group_me_br` (NB1) — portfolio_score
+# MAGIC - `ds_catalog_dev.credit_engine.abt_inference_me_br` (NB1) — features e scores individuais
+# MAGIC - `ds_catalog_dev.credit_engine.portfolio_abt_group_me_br` (NB1) — portfolio_score
 # MAGIC - `de_data_lake_prd.dados_mestres.dbpessoa_tab_pessoa` — RUT (num_registro_comercial)
 # MAGIC - `de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial` — taxa CLP/USD
-# MAGIC - `ds_catalog_dev.default.customer_top_category_me_br` (NB1b) — categoria principal por cliente/mes
-# MAGIC - `ds_catalog_dev.default.category_limit_me_br` (NB1b) — teto de limite por categoria/mes
+# MAGIC - `ds_catalog_dev.credit_engine.customer_top_category_me_br` (NB1b) — categoria principal por cliente/mes
+# MAGIC - `ds_catalog_dev.credit_engine.category_limit_me_br` (NB1b) — teto de limite por categoria/mes
 # MAGIC - NB02b (`integrated_score_me_br`) atualiza colunas MI, integrated, credit_limit_end, id_customer_mi e market_scope
 
 # COMMAND ----------
@@ -110,7 +110,7 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # DBTITLE 0,Inicializacao: criar tabela destino se nao existir
 # MAGIC %sql
 # MAGIC
-# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.apply_model_me_br (
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.apply_model_me_br (
 # MAGIC   id_customer                  INT,
 # MAGIC   rut                          STRING     COMMENT 'RUT normalizado via dbpessoa_tab_pessoa.num_registro_comercial',
 # MAGIC   customer_name                STRING,
@@ -149,7 +149,7 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC     COUNT(*)                             AS cnt,
 # MAGIC     CAST(MIN(reference_month) AS STRING) AS min_safra,
 # MAGIC     CAST(MAX(reference_month) AS STRING) AS max_safra
-# MAGIC   FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC   FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC )
 
 # COMMAND ----------
@@ -160,7 +160,7 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC SELECT
 # MAGIC   MAX(reference_month)  AS ultima_safra_processada,
 # MAGIC   current_timestamp()   AS data_atualizacao
-# MAGIC FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.apply_model_me_br
 
 # COMMAND ----------
 
@@ -241,7 +241,7 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC   FROM de_data_lake_prd.dados_mestres.dbpessoa_tab_pessoa tp
 # MAGIC   LEFT JOIN (
 # MAGIC     SELECT id_customer, MAX(reference_month) AS max_ref
-# MAGIC     FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC     FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC     GROUP BY id_customer
 # MAGIC   ) am ON tp.cod_pessoa = am.id_customer
 # MAGIC   WHERE tp.num_registro_comercial IS NOT NULL
@@ -266,8 +266,8 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC     COALESCE(inf.reference_value_clp, 0)                         AS reference_value_clp,
 # MAGIC     COALESCE(inf.payment_term,        1.0)                       AS payment_term,
 # MAGIC     COALESCE(inf.id_customer_group_economic, inf.id_customer)    AS id_customer_group_economic
-# MAGIC   FROM ds_catalog_dev.default.abt_inference_me_br AS inf
-# MAGIC   LEFT JOIN ds_catalog_dev.default.portfolio_abt_group_me_br AS pag
+# MAGIC   FROM ds_catalog_dev.credit_engine.abt_inference_me_br AS inf
+# MAGIC   LEFT JOIN ds_catalog_dev.credit_engine.portfolio_abt_group_me_br AS pag
 # MAGIC     ON inf.reference_month = pag.reference_month
 # MAGIC   WHERE inf.reference_month > add_months(
 # MAGIC     COALESCE(
@@ -360,7 +360,7 @@ print(f"Data de referencia do pipeline: {effective_date}")
 
 # DBTITLE 1,MERGE incremental: apply_model_me_br
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.apply_model_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.apply_model_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT
 # MAGIC     id_customer,
@@ -394,50 +394,50 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # DBTITLE 1,Sanity checks: validacao pos-processamento
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br)                          AS total_linhas,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
-# MAGIC    WHERE updated_at = (SELECT MAX(updated_at) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br)                          AS total_linhas,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE updated_at = (SELECT MAX(updated_at) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC                        WHERE updated_at IS NOT NULL))                      AS linhas_ultima_execucao,
-# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.default.apply_model_me_br)              AS safra_min,
-# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br)              AS safra_max,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.apply_model_me_br)   AS total_safras,
-# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.default.apply_model_me_br)       AS total_clientes,
+# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)              AS safra_min,
+# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)              AS safra_max,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)   AS total_safras,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.credit_engine.apply_model_me_br)       AS total_clientes,
 # MAGIC   (SELECT COUNT(*) FROM (
 # MAGIC     SELECT reference_month, id_customer, COUNT(*) AS cnt
-# MAGIC     FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC     FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC     GROUP BY reference_month, id_customer HAVING cnt > 1
 # MAGIC   ))                                                                       AS duplicatas,
-# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.default.abt_inference_me_br)            AS abt_max_safra,
+# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.abt_inference_me_br)            AS abt_max_safra,
 # MAGIC   (SELECT add_months(MAX(reference_month), 1)
-# MAGIC    FROM ds_catalog_dev.default.abt_inference_me_br)                                         AS expected_apply_max,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC    FROM ds_catalog_dev.credit_engine.abt_inference_me_br)                                         AS expected_apply_max,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE adjusted_score IS NULL
-# MAGIC      AND updated_at = (SELECT MAX(updated_at) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC      AND updated_at = (SELECT MAX(updated_at) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC                        WHERE updated_at IS NOT NULL))                      AS nulls_adjusted_score,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE rut IS NULL
-# MAGIC      AND updated_at = (SELECT MAX(updated_at) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC      AND updated_at = (SELECT MAX(updated_at) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC                        WHERE updated_at IS NOT NULL))                      AS nulls_rut,
 # MAGIC   -- Distribuicao de bandas na ultima safra
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE score_band = '1-BAIXO'
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br)) AS band_baixo,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)) AS band_baixo,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE score_band = '2-MEDIO'
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br)) AS band_medio,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)) AS band_medio,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE score_band = '3-ALTO'
-# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.default.apply_model_me_br)) AS band_alto,
+# MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)) AS band_alto,
 # MAGIC   -- credit_limit_end: preenchido pelo NB02b (esperado NULL neste ponto)
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NOT NULL)                                     AS clientes_com_credit_limit_end,
 # MAGIC   -- id_customer_mi e market_scope: preenchidos pelo NB02b (esperado NULL neste ponto)
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE id_customer_mi IS NOT NULL)                                       AS clientes_com_id_customer_mi,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE market_scope IS NOT NULL)                                         AS clientes_com_market_scope
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select * from ds_catalog_dev.default.apply_model_me_br
+# MAGIC select * from ds_catalog_dev.credit_engine.apply_model_me_br

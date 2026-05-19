@@ -3,7 +3,7 @@
 # MAGIC %md
 # MAGIC ## Pipeline: Monitoramento do Modelo - ME BR
 # MAGIC
-# MAGIC Consolida o detalhe cliente x safra em `ds_catalog_dev.default.monitoring_me_br` e gera as
+# MAGIC Consolida o detalhe cliente x safra em `ds_catalog_dev.credit_engine.monitoring_me_br` e gera as
 # MAGIC **16 tabelas de monitoramento** no mesmo formato (tidy/long) do padrao
 # MAGIC corporativo enviado no Excel `Monitoramento_me`.
 # MAGIC
@@ -96,7 +96,7 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 # MAGIC %sql
 # MAGIC -- Detalhe cliente x safra. Sem DROP: o historico e preservado.
 # MAGIC -- Features/scores sao imutaveis; colunas de target atualizam retroativo.
-# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.monitoring_me_br (
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.monitoring_me_br (
 # MAGIC   id_customer                    INT,
 # MAGIC   customer_name                  STRING,
 # MAGIC   country                        STRING,
@@ -159,19 +159,19 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 # MAGIC SELECT 'abt_inference_me_br' AS tabela, COUNT(*) AS total_linhas,
 # MAGIC   CAST(MIN(reference_month) AS STRING) AS safra_min,
 # MAGIC   CAST(MAX(reference_month) AS STRING) AS safra_max
-# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC UNION ALL
 # MAGIC SELECT 'portfolio_abt_group_me_br', COUNT(*),
 # MAGIC   CAST(MIN(reference_month) AS STRING), CAST(MAX(reference_month) AS STRING)
-# MAGIC FROM ds_catalog_dev.default.portfolio_abt_group_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.portfolio_abt_group_me_br
 # MAGIC UNION ALL
 # MAGIC SELECT 'apply_model_me_br', COUNT(*),
 # MAGIC   CAST(MIN(reference_month) AS STRING), CAST(MAX(reference_month) AS STRING)
-# MAGIC FROM ds_catalog_dev.default.apply_model_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC UNION ALL
 # MAGIC SELECT 'targets_me_br', COUNT(*),
 # MAGIC   CAST(MIN(reference_month) AS STRING), CAST(MAX(reference_month) AS STRING)
-# MAGIC FROM ds_catalog_dev.default.targets_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.targets_me_br
 
 # COMMAND ----------
 
@@ -206,13 +206,13 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 # MAGIC   t.billed_6m  AS target_billed_6m,  t.overdue_6m  AS target_overdue_6m,  t.overdue_pct_6m  AS target_overdue_pct_6m,
 # MAGIC   t.billed_12m AS target_billed_12m, t.overdue_12m AS target_overdue_12m, t.overdue_pct_12m AS target_overdue_pct_12m,
 # MAGIC   current_timestamp() AS updated_at
-# MAGIC FROM ds_catalog_dev.default.apply_model_me_br AS am
-# MAGIC LEFT JOIN ds_catalog_dev.default.abt_inference_me_br AS inf
+# MAGIC FROM ds_catalog_dev.credit_engine.apply_model_me_br AS am
+# MAGIC LEFT JOIN ds_catalog_dev.credit_engine.abt_inference_me_br AS inf
 # MAGIC   ON inf.id_customer = am.id_customer
 # MAGIC  AND inf.reference_month = add_months(am.reference_month, -1)
-# MAGIC LEFT JOIN ds_catalog_dev.default.portfolio_abt_group_me_br AS pag
+# MAGIC LEFT JOIN ds_catalog_dev.credit_engine.portfolio_abt_group_me_br AS pag
 # MAGIC   ON pag.reference_month = add_months(am.reference_month, -1)
-# MAGIC LEFT JOIN ds_catalog_dev.default.targets_me_br AS t
+# MAGIC LEFT JOIN ds_catalog_dev.credit_engine.targets_me_br AS t
 # MAGIC   ON t.id_customer = am.id_customer
 # MAGIC  AND t.reference_month = am.reference_month
 
@@ -220,7 +220,7 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 
 # DBTITLE 1,MERGE monitoring_me_br: insere novos + atualiza targets
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.monitoring_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.monitoring_me_br AS target
 # MAGIC USING monitoring_source AS source
 # MAGIC ON target.reference_month = source.reference_month
 # MAGIC    AND target.id_customer = source.id_customer
@@ -256,14 +256,14 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 # DBTITLE 1,Sanity check: monitoring_me_br
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.monitoring_me_br) AS total_linhas,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.monitoring_me_br) AS total_safras,
-# MAGIC   (SELECT CAST(MAX(reference_month) AS STRING) FROM ds_catalog_dev.default.monitoring_me_br) AS safra_max,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.monitoring_me_br) AS total_linhas,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.monitoring_me_br) AS total_safras,
+# MAGIC   (SELECT CAST(MAX(reference_month) AS STRING) FROM ds_catalog_dev.credit_engine.monitoring_me_br) AS safra_max,
 # MAGIC   (SELECT COUNT(*) FROM (
 # MAGIC      SELECT reference_month, id_customer, COUNT(*) c
-# MAGIC      FROM ds_catalog_dev.default.monitoring_me_br GROUP BY reference_month, id_customer HAVING c > 1
+# MAGIC      FROM ds_catalog_dev.credit_engine.monitoring_me_br GROUP BY reference_month, id_customer HAVING c > 1
 # MAGIC    )) AS duplicatas,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.monitoring_me_br WHERE adjusted_score IS NULL) AS sem_adjusted_score
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.monitoring_me_br WHERE adjusted_score IS NULL) AS sem_adjusted_score
 
 # COMMAND ----------
 
@@ -278,7 +278,7 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 
 # DBTITLE 1,DDL: criar as 16 tabelas de monitoramento (IF NOT EXISTS)
 spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.performance_me_br (
+CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.performance_me_br (
   performance STRING, period STRING, value DOUBLE, market_name STRING,
   metric_key STRING, reference_year INT, reference_month INT, updated_at TIMESTAMP
 ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
@@ -292,14 +292,14 @@ for tname in [
     "iep_por_decil_me_br",
 ]:
     spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.{tname} (
+    CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.{tname} (
       decil INT, period STRING, value DOUBLE, market_name STRING,
       metric_key STRING, reference_year INT, reference_month INT, updated_at TIMESTAMP
     ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
     """)
 
 spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.decile_migrations_me_br (
+CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.decile_migrations_me_br (
   previous_decile INT, current_decile INT, count INT, period STRING,
   market_name STRING, metric_key STRING, reference_year INT,
   reference_month INT, updated_at TIMESTAMP, update_at TIMESTAMP
@@ -307,7 +307,7 @@ CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.decile_migrations_me_br (
 """)
 
 spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.iep_me_br (
+CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.iep_me_br (
   variaveis STRING, period STRING, value DOUBLE, market_name STRING,
   metric_key STRING, reference_year INT, reference_month INT, updated_at TIMESTAMP
 ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
@@ -316,7 +316,7 @@ CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.iep_me_br (
 # Tabelas por variavel + grupo (sem coeficiente), value DOUBLE
 for tname in ["iep_vars_me_br", "risco_relativo_me_br"]:
     spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.{tname} (
+    CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.{tname} (
       variaveis STRING, grupo STRING, period STRING, value DOUBLE,
       market_name STRING, metric_key STRING, reference_year INT,
       reference_month INT, updated_at TIMESTAMP
@@ -325,7 +325,7 @@ for tname in ["iep_vars_me_br", "risco_relativo_me_br"]:
 
 # risco_relativo_trigger: value e STRING ('true'/'false'), igual ao padrao Excel
 spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.risco_relativo_trigger_me_br (
+CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.risco_relativo_trigger_me_br (
   variaveis STRING, grupo STRING, period STRING, value STRING,
   market_name STRING, metric_key STRING, reference_year INT,
   reference_month INT, updated_at TIMESTAMP
@@ -335,7 +335,7 @@ CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.risco_relativo_trigger_me_br (
 # Tabelas por variavel + grupo + coeficiente
 for tname in ["dist_vars_me_br", "dist_vars_diff_pp_me_br", "vol_vars_me_br"]:
     spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS ds_catalog_dev.default.{tname} (
+    CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.{tname} (
       variaveis STRING, grupo STRING, coeficientes DOUBLE, period STRING,
       value DOUBLE, market_name STRING, metric_key STRING,
       reference_year INT, reference_month INT, updated_at TIMESTAMP
@@ -390,7 +390,7 @@ pdf = spark.sql(f"""
            portfolio_score, score,
            median_cluster_10, median_cluster_20,
            median_cluster_30, median_cluster_50
-    FROM ds_catalog_dev.default.monitoring_me_br
+    FROM ds_catalog_dev.credit_engine.monitoring_me_br
     WHERE {SCORE_COL} IS NOT NULL
 """).toPandas()
 
@@ -704,7 +704,7 @@ _TYPE = {"s": StringType(), "d": DoubleType(), "i": IntegerType(), "t": Timestam
 
 def merge_table(metric, data):
     cols, types, keys = SCHEMAS[metric]
-    tname = f"ds_catalog_dev.default.{metric}_me_br"
+    tname = f"ds_catalog_dev.credit_engine.{metric}_me_br"
     if not data:
         print(f"  {tname}: 0 linhas, skip")
         return
@@ -731,29 +731,29 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # DBTITLE 1,Sanity checks: tabelas de monitoramento
 # MAGIC %sql
 # MAGIC SELECT 'performance_me_br' AS tabela, COUNT(*) AS linhas,
-# MAGIC   COUNT(DISTINCT period) AS periodos FROM ds_catalog_dev.default.performance_me_br
-# MAGIC UNION ALL SELECT 'dist_por_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.dist_por_decil_me_br
-# MAGIC UNION ALL SELECT 'perc_bad_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.perc_bad_decil_me_br
-# MAGIC UNION ALL SELECT 'df_dist_bad_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.df_dist_bad_decil_me_br
-# MAGIC UNION ALL SELECT 'decile_migrations_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.decile_migrations_me_br
-# MAGIC UNION ALL SELECT 'iep_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.iep_me_br
-# MAGIC UNION ALL SELECT 'iep_por_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.iep_por_decil_me_br
-# MAGIC UNION ALL SELECT 'iep_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.iep_vars_me_br
-# MAGIC UNION ALL SELECT 'dist_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.dist_vars_me_br
-# MAGIC UNION ALL SELECT 'vol_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.vol_vars_me_br
-# MAGIC UNION ALL SELECT 'risco_relativo_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.risco_relativo_me_br
-# MAGIC UNION ALL SELECT 'risco_relativo_trigger_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.risco_relativo_trigger_me_br
-# MAGIC UNION ALL SELECT 'dist_por_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.dist_por_decil_diff_pp_me_br
-# MAGIC UNION ALL SELECT 'perc_bad_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.perc_bad_decil_diff_pp_me_br
-# MAGIC UNION ALL SELECT 'df_dist_bad_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.df_dist_bad_decil_diff_pp_me_br
-# MAGIC UNION ALL SELECT 'dist_vars_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.default.dist_vars_diff_pp_me_br
+# MAGIC   COUNT(DISTINCT period) AS periodos FROM ds_catalog_dev.credit_engine.performance_me_br
+# MAGIC UNION ALL SELECT 'dist_por_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_por_decil_me_br
+# MAGIC UNION ALL SELECT 'perc_bad_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.perc_bad_decil_me_br
+# MAGIC UNION ALL SELECT 'df_dist_bad_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.df_dist_bad_decil_me_br
+# MAGIC UNION ALL SELECT 'decile_migrations_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.decile_migrations_me_br
+# MAGIC UNION ALL SELECT 'iep_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.iep_me_br
+# MAGIC UNION ALL SELECT 'iep_por_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.iep_por_decil_me_br
+# MAGIC UNION ALL SELECT 'iep_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.iep_vars_me_br
+# MAGIC UNION ALL SELECT 'dist_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_vars_me_br
+# MAGIC UNION ALL SELECT 'vol_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.vol_vars_me_br
+# MAGIC UNION ALL SELECT 'risco_relativo_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.risco_relativo_me_br
+# MAGIC UNION ALL SELECT 'risco_relativo_trigger_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.risco_relativo_trigger_me_br
+# MAGIC UNION ALL SELECT 'dist_por_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_por_decil_diff_pp_me_br
+# MAGIC UNION ALL SELECT 'perc_bad_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.perc_bad_decil_diff_pp_me_br
+# MAGIC UNION ALL SELECT 'df_dist_bad_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.df_dist_bad_decil_diff_pp_me_br
+# MAGIC UNION ALL SELECT 'dist_vars_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_vars_diff_pp_me_br
 
 # COMMAND ----------
 
 # DBTITLE 1,Inspecao: performance e PSI da safra mais recente
 # MAGIC %sql
 # MAGIC SELECT performance, period, ROUND(value, 4) AS value
-# MAGIC FROM ds_catalog_dev.default.performance_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.performance_me_br
 # MAGIC WHERE period <> 'Train'
 # MAGIC ORDER BY reference_year DESC, reference_month DESC, performance
 # MAGIC LIMIT 15
@@ -766,8 +766,8 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   CASE WHEN value < 0.10 THEN 'Estavel'
 # MAGIC        WHEN value < 0.25 THEN 'Moderado'
 # MAGIC        ELSE 'Significativo' END AS classificacao
-# MAGIC FROM ds_catalog_dev.default.iep_me_br
-# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.default.iep_me_br WHERE period <> 'Train')
+# MAGIC FROM ds_catalog_dev.credit_engine.iep_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.iep_me_br WHERE period <> 'Train')
 # MAGIC ORDER BY value DESC
 
 # COMMAND ----------
@@ -798,8 +798,8 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC     WHEN MAX(CASE WHEN d.decil IN (1,2,3) THEN d.value ELSE 0 END) > 80
 # MAGIC     THEN 'ALERTA: concentracao alta' ELSE 'OK'
 # MAGIC   END AS flag_concentracao
-# MAGIC FROM ds_catalog_dev.default.dist_por_decil_me_br d
-# MAGIC JOIN ds_catalog_dev.default.vol_vars_me_br v
+# MAGIC FROM ds_catalog_dev.credit_engine.dist_por_decil_me_br d
+# MAGIC JOIN ds_catalog_dev.credit_engine.vol_vars_me_br v
 # MAGIC   ON v.period = d.period
 # MAGIC  AND v.variaveis LIKE 'score=%'
 # MAGIC  AND v.periodo_ref = d.period
@@ -819,7 +819,7 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   MAX(CASE WHEN decil = 2 THEN ROUND(value,2) END) AS pct_medio,
 # MAGIC   MAX(CASE WHEN decil = 3 THEN ROUND(value,2) END) AS pct_alto,
 # MAGIC   MAX(CASE WHEN decil = -1 THEN ROUND(value,2) END) AS pct_sem_score
-# MAGIC FROM ds_catalog_dev.default.dist_por_decil_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.dist_por_decil_me_br
 # MAGIC WHERE period <> 'Train'
 # MAGIC GROUP BY period, reference_year, reference_month
 # MAGIC ORDER BY reference_year DESC, reference_month DESC
@@ -840,7 +840,7 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC     MAX(CASE WHEN variaveis = 'portfolio_score' THEN value ELSE 0 END) AS psi_portfolio_score,
 # MAGIC     SUM(CASE WHEN value >= 0.25 AND variaveis <> 'portfolio_score' THEN 1 ELSE 0 END) AS n_features_significativo,
 # MAGIC     SUM(CASE WHEN value BETWEEN 0.10 AND 0.25 AND variaveis <> 'portfolio_score' THEN 1 ELSE 0 END) AS n_features_moderado
-# MAGIC   FROM ds_catalog_dev.default.iep_me_br
+# MAGIC   FROM ds_catalog_dev.credit_engine.iep_me_br
 # MAGIC   WHERE period <> 'Train'
 # MAGIC   GROUP BY period, reference_year, reference_month
 # MAGIC ),
@@ -849,14 +849,14 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC     MAX(CASE WHEN performance = 'ROC'  THEN ROUND(value,4) END) AS roc,
 # MAGIC     MAX(CASE WHEN performance = 'KS'   THEN ROUND(value,4) END) AS ks,
 # MAGIC     MAX(CASE WHEN performance = 'Gini' THEN ROUND(value,4) END) AS gini
-# MAGIC   FROM ds_catalog_dev.default.performance_me_br
+# MAGIC   FROM ds_catalog_dev.credit_engine.performance_me_br
 # MAGIC   WHERE period <> 'Train'
 # MAGIC   GROUP BY period
 # MAGIC ),
 # MAGIC train_perf AS (
 # MAGIC   SELECT
 # MAGIC     MAX(CASE WHEN performance = 'ROC' THEN value END) AS roc_train
-# MAGIC   FROM ds_catalog_dev.default.performance_me_br WHERE period = 'Train'
+# MAGIC   FROM ds_catalog_dev.credit_engine.performance_me_br WHERE period = 'Train'
 # MAGIC )
 # MAGIC SELECT
 # MAGIC   p.period,
@@ -890,7 +890,7 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC     MAX(CASE WHEN decil = 1 THEN ROUND(value,4) END) AS bad_rate_baixo,
 # MAGIC     MAX(CASE WHEN decil = 2 THEN ROUND(value,4) END) AS bad_rate_medio,
 # MAGIC     MAX(CASE WHEN decil = 3 THEN ROUND(value,4) END) AS bad_rate_alto
-# MAGIC   FROM ds_catalog_dev.default.perc_bad_decil_me_br
+# MAGIC   FROM ds_catalog_dev.credit_engine.perc_bad_decil_me_br
 # MAGIC   GROUP BY period, reference_year, reference_month
 # MAGIC )
 # MAGIC SELECT
@@ -925,11 +925,11 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   variaveis,
 # MAGIC   ROUND(value, 4) AS pct_populacao,
 # MAGIC   coeficientes
-# MAGIC FROM ds_catalog_dev.default.dist_vars_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.dist_vars_me_br
 # MAGIC WHERE variaveis LIKE 'portfolio_score=%'
 # MAGIC   AND period IN (
 # MAGIC     'Train',
-# MAGIC     (SELECT MAX(period) FROM ds_catalog_dev.default.dist_vars_me_br WHERE period <> 'Train')
+# MAGIC     (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.dist_vars_me_br WHERE period <> 'Train')
 # MAGIC   )
 # MAGIC ORDER BY period, variaveis
 
@@ -943,7 +943,7 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   period,
 # MAGIC   COUNT(DISTINCT variaveis) AS n_bins_distintos,
 # MAGIC   SUM(value)                AS soma_pct_check  -- deve ser ~100
-# MAGIC FROM ds_catalog_dev.default.dist_vars_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.dist_vars_me_br
 # MAGIC WHERE variaveis LIKE 'portfolio_score=%'
 # MAGIC GROUP BY period
 # MAGIC ORDER BY period
@@ -968,7 +968,7 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC     WHEN MAX(CASE WHEN performance = 'KS'  THEN value END) < 0.15 THEN 'ATENCAO: KS baixo'
 # MAGIC     ELSE 'OK'
 # MAGIC   END AS status_performance
-# MAGIC FROM ds_catalog_dev.default.performance_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.performance_me_br
 # MAGIC GROUP BY period, reference_year, reference_month
 # MAGIC ORDER BY
 # MAGIC   CASE WHEN period = 'Train' THEN 0 ELSE 1 END,
@@ -986,11 +986,11 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   variaveis,
 # MAGIC   period,
 # MAGIC   ROUND(value, 4) AS pct_populacao
-# MAGIC FROM ds_catalog_dev.default.dist_vars_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.dist_vars_me_br
 # MAGIC WHERE variaveis LIKE 'pct_months_overdue_10_20=%'
 # MAGIC   AND period IN (
 # MAGIC     'Train',
-# MAGIC     (SELECT MAX(period) FROM ds_catalog_dev.default.dist_vars_me_br WHERE period <> 'Train')
+# MAGIC     (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.dist_vars_me_br WHERE period <> 'Train')
 # MAGIC   )
 # MAGIC ORDER BY period, variaveis
 
@@ -1006,7 +1006,7 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   COUNT(DISTINCT period) AS n_periodos_alerta,
 # MAGIC   MIN(period)            AS primeira_ocorrencia,
 # MAGIC   MAX(period)            AS ultima_ocorrencia
-# MAGIC FROM ds_catalog_dev.default.risco_relativo_trigger_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.risco_relativo_trigger_me_br
 # MAGIC WHERE value = 'true'
 # MAGIC   AND period <> 'Train'
 # MAGIC GROUP BY variaveis, grupo
@@ -1026,9 +1026,9 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   count,
 # MAGIC   ROUND(100.0 * count / SUM(count) OVER (PARTITION BY period), 2) AS pct_do_total,
 # MAGIC   period
-# MAGIC FROM ds_catalog_dev.default.decile_migrations_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.decile_migrations_me_br
 # MAGIC WHERE period = (
-# MAGIC   SELECT MAX(period) FROM ds_catalog_dev.default.decile_migrations_me_br WHERE period <> 'Train'
+# MAGIC   SELECT MAX(period) FROM ds_catalog_dev.credit_engine.decile_migrations_me_br WHERE period <> 'Train'
 # MAGIC )
 # MAGIC ORDER BY previous_decile, current_decile
 
@@ -1049,6 +1049,6 @@ print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
 # MAGIC   ROUND(PERCENTILE(integrated_score, 0.50), 4) AS p50,
 # MAGIC   ROUND(PERCENTILE(integrated_score, 0.75), 4) AS p75,
 # MAGIC   COUNT(CASE WHEN integrated_score IS NULL THEN 1 END) AS n_nulos
-# MAGIC FROM ds_catalog_dev.default.monitoring_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_me_br
 # MAGIC GROUP BY DATE_FORMAT(reference_month, 'yyyy/MM'), reference_month
 # MAGIC ORDER BY reference_month

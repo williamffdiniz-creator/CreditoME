@@ -39,8 +39,8 @@
 # MAGIC ### Tabelas
 # MAGIC | Tabela | Descricao |
 # MAGIC |--------|-----------|
-# MAGIC | `ds_catalog_dev.default.abt_inference_me_br` | Features + score por cliente/safra (4 faixas, escala %) |
-# MAGIC | `ds_catalog_dev.default.portfolio_abt_group_me_br` | Medianas + portfolio_score por safra |
+# MAGIC | `ds_catalog_dev.credit_engine.abt_inference_me_br` | Features + score por cliente/safra (4 faixas, escala %) |
+# MAGIC | `ds_catalog_dev.credit_engine.portfolio_abt_group_me_br` | Medianas + portfolio_score por safra |
 
 # COMMAND ----------
 
@@ -56,9 +56,9 @@ print(f"Data de referencia: {effective_date}")
 
 # DBTITLE 0,DROP + CREATE abt_inference_me_br_v7
 dbutils.fs.rm("dbfs:/user/hive/warehouse/teste.db/abt_inference_me_br", True)
-spark.sql("DROP TABLE IF EXISTS ds_catalog_dev.default.abt_inference_me_br")
+spark.sql("DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.abt_inference_me_br")
 spark.sql("""
-CREATE TABLE ds_catalog_dev.default.abt_inference_me_br (
+CREATE TABLE ds_catalog_dev.credit_engine.abt_inference_me_br (
   id_customer            INT,
   customer_name          STRING,
   country                STRING,
@@ -93,7 +93,7 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # MAGIC SELECT MAX(reference_month) AS ultima_safra_processada,
 # MAGIC        current_timestamp() AS data_atualizacao,
 # MAGIC        (SELECT data_referencia FROM config_pipeline) AS data_referencia
-# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 
 # COMMAND ----------
 
@@ -679,8 +679,8 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # DBTITLE 1,DROP + CREATE portfolio_abt_group_me_br_v7
 # MAGIC %sql
-# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.default.portfolio_abt_group_me_br;
-# MAGIC CREATE TABLE ds_catalog_dev.default.portfolio_abt_group_me_br (
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.portfolio_abt_group_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.portfolio_abt_group_me_br (
 # MAGIC   reference_month          DATE,
 # MAGIC   median_cluster_10        DOUBLE COMMENT 'Mediana 10-20% (escala %)',
 # MAGIC   median_cluster_20        DOUBLE COMMENT 'Mediana 20-30% (escala %)',
@@ -698,7 +698,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # DBTITLE 1,MERGE portfolio_abt_group_me_br_v7
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.portfolio_abt_group_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.portfolio_abt_group_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT m.safra AS reference_month,
 # MAGIC     m.mediana_cluster_10 AS median_cluster_10,
@@ -952,7 +952,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # DBTITLE 1,MERGE abt_inference_me_br_v7
 # MAGIC %sql
-# MAGIC MERGE INTO ds_catalog_dev.default.abt_inference_me_br AS target
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.abt_inference_me_br AS target
 # MAGIC USING (
 # MAGIC   SELECT
 # MAGIC     CAST(cc.cod_pessoa_cliente AS INT) AS id_customer,
@@ -998,14 +998,14 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # DBTITLE 0,Sanity checks
 # MAGIC %sql
 # MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.default.abt_inference_me_br) AS total_linhas,
-# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.default.abt_inference_me_br) AS safra_min,
-# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.default.abt_inference_me_br) AS safra_max,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.default.abt_inference_me_br) AS total_safras,
-# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.default.abt_inference_me_br) AS total_clientes,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.abt_inference_me_br) AS total_linhas,
+# MAGIC   (SELECT MIN(reference_month) FROM ds_catalog_dev.credit_engine.abt_inference_me_br) AS safra_min,
+# MAGIC   (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.abt_inference_me_br) AS safra_max,
+# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.abt_inference_me_br) AS total_safras,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.credit_engine.abt_inference_me_br) AS total_clientes,
 # MAGIC   (SELECT COUNT(*) FROM (
 # MAGIC     SELECT reference_month, id_customer, COUNT(*) AS cnt
-# MAGIC     FROM ds_catalog_dev.default.abt_inference_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
+# MAGIC     FROM ds_catalog_dev.credit_engine.abt_inference_me_br GROUP BY reference_month, id_customer HAVING cnt > 1
 # MAGIC   )) AS duplicatas
 
 # COMMAND ----------
@@ -1015,7 +1015,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC   CASE WHEN reference_value = 0 THEN 'zerado' ELSE 'preenchido' END AS status_reference_value,
 # MAGIC   COUNT(*)                                                           AS qtd,
 # MAGIC   ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER(), 2)                 AS pct
-# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC GROUP BY 1
 # MAGIC ORDER BY 1
 
@@ -1028,6 +1028,6 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC   SUM(CASE WHEN reference_value = 0 THEN 1 ELSE 0 END)                       AS zerados,
 # MAGIC   ROUND(SUM(CASE WHEN reference_value = 0 THEN 1 ELSE 0 END) * 100.0
 # MAGIC         / COUNT(*), 2)                                                        AS pct_zerado
-# MAGIC FROM ds_catalog_dev.default.abt_inference_me_br
+# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC GROUP BY reference_month
 # MAGIC ORDER BY reference_month DESC
