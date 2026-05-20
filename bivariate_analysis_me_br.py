@@ -746,6 +746,9 @@ query = """
 """
 
 df = spark.sql(query).toPandas()
+# SELECT * + aliases criam colunas duplicadas (score_band, safra, cod_pessoa...).
+# Manter a ultima ocorrencia (alias do CASE/expressao) e descartar a original.
+df = df.loc[:, ~df.columns.duplicated(keep='last')]
 
 # COMMAND ----------
 
