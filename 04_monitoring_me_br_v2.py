@@ -1,17 +1,14 @@
 # Databricks notebook source
-# 04_monitoring_me_br_v2.py  —  Monitoramento ME BR v2 (consolidado)
-# Gerado automaticamente de 04_monitoring_me_br_v2.ipynb
 
-# COMMAND ----------
-
+# MAGIC %md
 # MAGIC ## Pipeline: Monitoramento ME BR — v2 (consolidado)
-# MAGIC 
+# MAGIC
 # MAGIC Este notebook gera **5 tabelas** que substituem as 16 tabelas Excel do padrão antigo + as 2 tabelas wide do v1.
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ### Tabelas produzidas
-# MAGIC 
+# MAGIC
 # MAGIC | Tabela | Granularidade | Comportamento | Substitui |
 # MAGIC |---|---|---|---|
 # MAGIC | `monitoring_me_br` | cliente × safra | MISTO (INSERT + UPDATE seletivo) | — (detalhe) |
@@ -19,13 +16,13 @@
 # MAGIC | `monitoring_band_me_br` | safra × banda | OVERWRITE | dist_por_decil, dist_por_decil_diff_pp, perc_bad_decil, perc_bad_decil_diff_pp, df_dist_bad_decil, df_dist_bad_decil_diff_pp, iep_por_decil |
 # MAGIC | `monitoring_features_me_br` | safra × feature × bin | OVERWRITE | dist_vars, dist_vars_diff_pp, vol_vars, iep, iep_vars, risco_relativo, risco_relativo_trigger |
 # MAGIC | `monitoring_band_migrations_me_br` | safra × prev_band × curr_band | OVERWRITE | decile_migrations |
-# MAGIC 
+# MAGIC
 # MAGIC **Resultado: 16 tabelas Excel → 3 tabelas tidy (+ 2 já existentes).**
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ### Mapeamento dos KPIs (todos preservados)
-# MAGIC 
+# MAGIC
 # MAGIC **`monitoring_band_me_br`** (1 linha por banda):
 # MAGIC - `pct_pop` — % população na banda (= dist_por_decil)
 # MAGIC - `pct_pop_diff_pp` — diferença pp vs Train (= dist_por_decil_diff_pp)
@@ -34,7 +31,7 @@
 # MAGIC - `pct_bad_share` — % dos bads concentrado na banda (= df_dist_bad_decil)
 # MAGIC - `pct_bad_share_diff_pp` — diferença pp vs Train (= df_dist_bad_decil_diff_pp)
 # MAGIC - `psi_contribution` — contribuição da banda ao PSI total (= iep_por_decil)
-# MAGIC 
+# MAGIC
 # MAGIC **`monitoring_features_me_br`** (1 linha por feature × bin):
 # MAGIC - `pct_pop` — % da população na faixa da feature (= dist_vars)
 # MAGIC - `pct_pop_diff_pp` — diferença pp vs Train (= dist_vars_diff_pp)
@@ -43,14 +40,14 @@
 # MAGIC - `lift_trigger` — 'true'/'false' se lift fora [0.5, 2.0] (= risco_relativo_trigger)
 # MAGIC - `psi_feature` — PSI da feature inteira (= iep)
 # MAGIC - `psi_within_group` — PSI da feature dentro do grupo (= iep_vars)
-# MAGIC 
+# MAGIC
 # MAGIC **`monitoring_band_migrations_me_br`** (1 linha por par de bandas):
 # MAGIC - `count`, `pct_of_pop` — contagem e % de clientes na transição (= decile_migrations)
-# MAGIC 
+# MAGIC
 # MAGIC ---
-# MAGIC 
+# MAGIC
 # MAGIC ### Configuração
-# MAGIC 
+# MAGIC
 # MAGIC - **Score**: `integrated_score`
 # MAGIC - **Banda**: `integrated_score_band` (1-BAIXO, 2-MEDIO, 3-ALTO)
 # MAGIC - **Target**: `target_percent7mob1`
@@ -58,7 +55,7 @@
 # MAGIC - **Período**: 'Train' (todas as safras pré-cutoff agregadas) ou 'YYYY/MM' (cada safra OOT individualmente)
 # MAGIC - **PSI baseline**: distribuição do período 'Train'
 # MAGIC - **diff_pp baseline**: período 'Train'
-# MAGIC 
+# MAGIC
 # MAGIC ### Pré-requisitos
 # MAGIC NB1, NB1b, NB2, NB2b, NB3 executados (alimentam abt_inference, apply_model, targets, portfolio_abt_group).
 
@@ -78,261 +75,263 @@ print(f"Train cutoff      : {train_cutoff}  (safras < cutoff = 'Train', >= cutof
 
 # COMMAND ----------
 
-%sql
--- Tabela 1: detalhe cliente x safra. Sem DROP: historico preservado.
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.monitoring_me_br (
-  id_customer                    INT,
-  customer_name                  STRING,
-  country                        STRING,
-  reference_month                DATE,
-  feature_reference_month        DATE,
-  total_amount                   DOUBLE,
-  overdue_amount                 DOUBLE,
-  overdue_pct                    DOUBLE,
-  months_with_billing            INT,
-  months_defaulted               INT,
-  pct_months_overdue_10_20       DOUBLE,
-  pct_months_overdue_20_30       DOUBLE,
-  pct_months_overdue_30_50       DOUBLE,
-  pct_months_overdue_50_plus     DOUBLE,
-  flag_transacted                INT,
-  score                          DOUBLE,
-  historical_weight              DOUBLE,
-  reference_value                DOUBLE,
-  reference_value_clp            DOUBLE,
-  payment_term                   DOUBLE,
-  median_cluster_10              DOUBLE,
-  median_cluster_20              DOUBLE,
-  median_cluster_30              DOUBLE,
-  median_cluster_50              DOUBLE,
-  portfolio_score                DOUBLE,
-  adjusted_score                 DOUBLE,
-  score_band                     STRING,
-  integrated_score               DOUBLE,
-  integrated_score_band          STRING,
-  credit_limit                   DOUBLE,
-  credit_limit_clp               DOUBLE,
-  credit_limit_end               DOUBLE,
-  credit_limit_end_clp           DOUBLE,
-  target_percent7mob1            INT,
-  target_percent7mob3            INT,
-  target_percent7mob6            INT,
-  target_percent7mob9            INT,
-  target_percent7mob12           INT,
-  target_billed_1m               DOUBLE,
-  target_overdue_1m              DOUBLE,
-  target_overdue_pct_1m          DOUBLE,
-  target_billed_3m               DOUBLE,
-  target_overdue_3m              DOUBLE,
-  target_overdue_pct_3m          DOUBLE,
-  target_billed_6m               DOUBLE,
-  target_overdue_6m              DOUBLE,
-  target_overdue_pct_6m          DOUBLE,
-  target_billed_12m              DOUBLE,
-  target_overdue_12m             DOUBLE,
-  target_overdue_pct_12m         DOUBLE,
-  updated_at                     TIMESTAMP
-)
-USING DELTA
-TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+# MAGIC %sql
+# MAGIC -- Tabela 1: detalhe cliente x safra. Sem DROP: historico preservado.
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.monitoring_me_br (
+# MAGIC   id_customer                    INT,
+# MAGIC   customer_name                  STRING,
+# MAGIC   country                        STRING,
+# MAGIC   reference_month                DATE,
+# MAGIC   feature_reference_month        DATE,
+# MAGIC   total_amount                   DOUBLE,
+# MAGIC   overdue_amount                 DOUBLE,
+# MAGIC   overdue_pct                    DOUBLE,
+# MAGIC   months_with_billing            INT,
+# MAGIC   months_defaulted               INT,
+# MAGIC   pct_months_overdue_10_20       DOUBLE,
+# MAGIC   pct_months_overdue_20_30       DOUBLE,
+# MAGIC   pct_months_overdue_30_50       DOUBLE,
+# MAGIC   pct_months_overdue_50_plus     DOUBLE,
+# MAGIC   flag_transacted                INT,
+# MAGIC   score                          DOUBLE,
+# MAGIC   historical_weight              DOUBLE,
+# MAGIC   reference_value                DOUBLE,
+# MAGIC   reference_value_clp            DOUBLE,
+# MAGIC   payment_term                   DOUBLE,
+# MAGIC   median_cluster_10              DOUBLE,
+# MAGIC   median_cluster_20              DOUBLE,
+# MAGIC   median_cluster_30              DOUBLE,
+# MAGIC   median_cluster_50              DOUBLE,
+# MAGIC   portfolio_score                DOUBLE,
+# MAGIC   adjusted_score                 DOUBLE,
+# MAGIC   score_band                     STRING,
+# MAGIC   integrated_score               DOUBLE,
+# MAGIC   integrated_score_band          STRING,
+# MAGIC   credit_limit                   DOUBLE,
+# MAGIC   credit_limit_clp               DOUBLE,
+# MAGIC   credit_limit_end               DOUBLE,
+# MAGIC   credit_limit_end_clp           DOUBLE,
+# MAGIC   target_percent7mob1            INT,
+# MAGIC   target_percent7mob3            INT,
+# MAGIC   target_percent7mob6            INT,
+# MAGIC   target_percent7mob9            INT,
+# MAGIC   target_percent7mob12           INT,
+# MAGIC   target_billed_1m               DOUBLE,
+# MAGIC   target_overdue_1m              DOUBLE,
+# MAGIC   target_overdue_pct_1m          DOUBLE,
+# MAGIC   target_billed_3m               DOUBLE,
+# MAGIC   target_overdue_3m              DOUBLE,
+# MAGIC   target_overdue_pct_3m          DOUBLE,
+# MAGIC   target_billed_6m               DOUBLE,
+# MAGIC   target_overdue_6m              DOUBLE,
+# MAGIC   target_overdue_pct_6m          DOUBLE,
+# MAGIC   target_billed_12m              DOUBLE,
+# MAGIC   target_overdue_12m             DOUBLE,
+# MAGIC   target_overdue_pct_12m         DOUBLE,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA
+# MAGIC TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
-%sql
--- View source: apply_model (m) + abt (m-1) + portfolio (m-1) + targets (m)
-CREATE OR REPLACE TEMP VIEW monitoring_source AS
-SELECT
-  am.id_customer, am.customer_name, am.country, am.reference_month,
-  add_months(am.reference_month, -1) AS feature_reference_month,
-  inf.total_amount, inf.overdue_amount, inf.overdue_pct,
-  inf.months_with_billing, inf.months_defaulted,
-  inf.pct_months_overdue_10_20, inf.pct_months_overdue_20_30,
-  inf.pct_months_overdue_30_50, inf.pct_months_overdue_50_plus,
-  inf.flag_transacted, inf.score, inf.historical_weight,
-  COALESCE(inf.reference_value, 0)     AS reference_value,
-  COALESCE(inf.reference_value_clp, 0) AS reference_value_clp,
-  COALESCE(inf.payment_term, 1.0)      AS payment_term,
-  pag.median_cluster_10, pag.median_cluster_20,
-  pag.median_cluster_30, pag.median_cluster_50, pag.portfolio_score,
-  am.adjusted_score, am.score_band,
-  am.integrated_score, am.integrated_score_band,
-  am.credit_limit, am.credit_limit_clp,
-  am.credit_limit_end, am.credit_limit_end_clp,
-  t.percent7mob1  AS target_percent7mob1,
-  t.percent7mob3  AS target_percent7mob3,
-  t.percent7mob6  AS target_percent7mob6,
-  t.percent7mob9  AS target_percent7mob9,
-  t.percent7mob12 AS target_percent7mob12,
-  t.billed_1m  AS target_billed_1m,  t.overdue_1m  AS target_overdue_1m,  t.overdue_pct_1m  AS target_overdue_pct_1m,
-  t.billed_3m  AS target_billed_3m,  t.overdue_3m  AS target_overdue_3m,  t.overdue_pct_3m  AS target_overdue_pct_3m,
-  t.billed_6m  AS target_billed_6m,  t.overdue_6m  AS target_overdue_6m,  t.overdue_pct_6m  AS target_overdue_pct_6m,
-  t.billed_12m AS target_billed_12m, t.overdue_12m AS target_overdue_12m, t.overdue_pct_12m AS target_overdue_pct_12m,
-  current_timestamp() AS updated_at
-FROM ds_catalog_dev.credit_engine.apply_model_me_br AS am
-LEFT JOIN ds_catalog_dev.credit_engine.abt_inference_me_br AS inf
-  ON inf.id_customer = am.id_customer
- AND inf.reference_month = add_months(am.reference_month, -1)
-LEFT JOIN ds_catalog_dev.credit_engine.portfolio_abt_group_me_br AS pag
-  ON pag.reference_month = add_months(am.reference_month, -1)
-LEFT JOIN ds_catalog_dev.credit_engine.targets_me_br AS t
-  ON t.id_customer = am.id_customer
- AND t.reference_month = am.reference_month
+# MAGIC %sql
+# MAGIC -- View source: apply_model (m) + abt (m-1) + portfolio (m-1) + targets (m)
+# MAGIC CREATE OR REPLACE TEMP VIEW monitoring_source AS
+# MAGIC SELECT
+# MAGIC   am.id_customer, am.customer_name, am.country, am.reference_month,
+# MAGIC   add_months(am.reference_month, -1) AS feature_reference_month,
+# MAGIC   inf.total_amount, inf.overdue_amount, inf.overdue_pct,
+# MAGIC   inf.months_with_billing, inf.months_defaulted,
+# MAGIC   inf.pct_months_overdue_10_20, inf.pct_months_overdue_20_30,
+# MAGIC   inf.pct_months_overdue_30_50, inf.pct_months_overdue_50_plus,
+# MAGIC   inf.flag_transacted, inf.score, inf.historical_weight,
+# MAGIC   COALESCE(inf.reference_value, 0)     AS reference_value,
+# MAGIC   COALESCE(inf.reference_value_clp, 0) AS reference_value_clp,
+# MAGIC   COALESCE(inf.payment_term, 1.0)      AS payment_term,
+# MAGIC   pag.median_cluster_10, pag.median_cluster_20,
+# MAGIC   pag.median_cluster_30, pag.median_cluster_50, pag.portfolio_score,
+# MAGIC   am.adjusted_score, am.score_band,
+# MAGIC   am.integrated_score, am.integrated_score_band,
+# MAGIC   am.credit_limit, am.credit_limit_clp,
+# MAGIC   am.credit_limit_end, am.credit_limit_end_clp,
+# MAGIC   t.percent7mob1  AS target_percent7mob1,
+# MAGIC   t.percent7mob3  AS target_percent7mob3,
+# MAGIC   t.percent7mob6  AS target_percent7mob6,
+# MAGIC   t.percent7mob9  AS target_percent7mob9,
+# MAGIC   t.percent7mob12 AS target_percent7mob12,
+# MAGIC   t.billed_1m  AS target_billed_1m,  t.overdue_1m  AS target_overdue_1m,  t.overdue_pct_1m  AS target_overdue_pct_1m,
+# MAGIC   t.billed_3m  AS target_billed_3m,  t.overdue_3m  AS target_overdue_3m,  t.overdue_pct_3m  AS target_overdue_pct_3m,
+# MAGIC   t.billed_6m  AS target_billed_6m,  t.overdue_6m  AS target_overdue_6m,  t.overdue_pct_6m  AS target_overdue_pct_6m,
+# MAGIC   t.billed_12m AS target_billed_12m, t.overdue_12m AS target_overdue_12m, t.overdue_pct_12m AS target_overdue_pct_12m,
+# MAGIC   current_timestamp() AS updated_at
+# MAGIC FROM ds_catalog_dev.credit_engine.apply_model_me_br AS am
+# MAGIC LEFT JOIN ds_catalog_dev.credit_engine.abt_inference_me_br AS inf
+# MAGIC   ON inf.id_customer = am.id_customer
+# MAGIC  AND inf.reference_month = add_months(am.reference_month, -1)
+# MAGIC LEFT JOIN ds_catalog_dev.credit_engine.portfolio_abt_group_me_br AS pag
+# MAGIC   ON pag.reference_month = add_months(am.reference_month, -1)
+# MAGIC LEFT JOIN ds_catalog_dev.credit_engine.targets_me_br AS t
+# MAGIC   ON t.id_customer = am.id_customer
+# MAGIC  AND t.reference_month = am.reference_month
 
 # COMMAND ----------
 
-%sql
-MERGE INTO ds_catalog_dev.credit_engine.monitoring_me_br AS target
-USING monitoring_source AS source
-ON target.reference_month = source.reference_month
-   AND target.id_customer = source.id_customer
-WHEN MATCHED THEN UPDATE SET
-  target.integrated_score        = source.integrated_score,
-  target.integrated_score_band   = source.integrated_score_band,
-  target.credit_limit            = source.credit_limit,
-  target.credit_limit_clp        = source.credit_limit_clp,
-  target.credit_limit_end        = source.credit_limit_end,
-  target.credit_limit_end_clp    = source.credit_limit_end_clp,
-  target.target_percent7mob1     = source.target_percent7mob1,
-  target.target_percent7mob3     = source.target_percent7mob3,
-  target.target_percent7mob6     = source.target_percent7mob6,
-  target.target_percent7mob9     = source.target_percent7mob9,
-  target.target_percent7mob12    = source.target_percent7mob12,
-  target.target_billed_1m        = source.target_billed_1m,
-  target.target_overdue_1m       = source.target_overdue_1m,
-  target.target_overdue_pct_1m   = source.target_overdue_pct_1m,
-  target.target_billed_3m        = source.target_billed_3m,
-  target.target_overdue_3m       = source.target_overdue_3m,
-  target.target_overdue_pct_3m   = source.target_overdue_pct_3m,
-  target.target_billed_6m        = source.target_billed_6m,
-  target.target_overdue_6m       = source.target_overdue_6m,
-  target.target_overdue_pct_6m   = source.target_overdue_pct_6m,
-  target.target_billed_12m       = source.target_billed_12m,
-  target.target_overdue_12m      = source.target_overdue_12m,
-  target.target_overdue_pct_12m  = source.target_overdue_pct_12m,
-  target.updated_at              = source.updated_at
-WHEN NOT MATCHED THEN INSERT *
+# MAGIC %sql
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.monitoring_me_br AS target
+# MAGIC USING monitoring_source AS source
+# MAGIC ON target.reference_month = source.reference_month
+# MAGIC    AND target.id_customer = source.id_customer
+# MAGIC WHEN MATCHED THEN UPDATE SET
+# MAGIC   target.integrated_score        = source.integrated_score,
+# MAGIC   target.integrated_score_band   = source.integrated_score_band,
+# MAGIC   target.credit_limit            = source.credit_limit,
+# MAGIC   target.credit_limit_clp        = source.credit_limit_clp,
+# MAGIC   target.credit_limit_end        = source.credit_limit_end,
+# MAGIC   target.credit_limit_end_clp    = source.credit_limit_end_clp,
+# MAGIC   target.target_percent7mob1     = source.target_percent7mob1,
+# MAGIC   target.target_percent7mob3     = source.target_percent7mob3,
+# MAGIC   target.target_percent7mob6     = source.target_percent7mob6,
+# MAGIC   target.target_percent7mob9     = source.target_percent7mob9,
+# MAGIC   target.target_percent7mob12    = source.target_percent7mob12,
+# MAGIC   target.target_billed_1m        = source.target_billed_1m,
+# MAGIC   target.target_overdue_1m       = source.target_overdue_1m,
+# MAGIC   target.target_overdue_pct_1m   = source.target_overdue_pct_1m,
+# MAGIC   target.target_billed_3m        = source.target_billed_3m,
+# MAGIC   target.target_overdue_3m       = source.target_overdue_3m,
+# MAGIC   target.target_overdue_pct_3m   = source.target_overdue_pct_3m,
+# MAGIC   target.target_billed_6m        = source.target_billed_6m,
+# MAGIC   target.target_overdue_6m       = source.target_overdue_6m,
+# MAGIC   target.target_overdue_pct_6m   = source.target_overdue_pct_6m,
+# MAGIC   target.target_billed_12m       = source.target_billed_12m,
+# MAGIC   target.target_overdue_12m      = source.target_overdue_12m,
+# MAGIC   target.target_overdue_pct_12m  = source.target_overdue_pct_12m,
+# MAGIC   target.updated_at              = source.updated_at
+# MAGIC WHEN NOT MATCHED THEN INSERT *
 
 # COMMAND ----------
 
+# MAGIC %md
 # MAGIC ## DDL das 4 tabelas de métricas
 
 # COMMAND ----------
 
-%sql
--- Tabela 2: metricas agregadas por safra (1 linha por reference_month)
-DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_metrics_me_br;
-CREATE TABLE ds_catalog_dev.credit_engine.monitoring_metrics_me_br (
-  reference_month                DATE,
-  period                         STRING,
-  total_clients                  INT,
-  pop_baixo                      INT,
-  pop_medio                      INT,
-  pop_alto                       INT,
-  pct_baixo                      DOUBLE,
-  pct_medio                      DOUBLE,
-  pct_alto                       DOUBLE,
-  avg_score                      DOUBLE,
-  median_score                   DOUBLE,
-  avg_credit_limit               DOUBLE,
-  median_credit_limit            DOUBLE,
-  total_credit_limit             DOUBLE,
-  avg_credit_limit_clp           DOUBLE,
-  median_credit_limit_clp        DOUBLE,
-  total_credit_limit_clp         DOUBLE,
-  total_billed_usd               DOUBLE,
-  overdue_usd                    DOUBLE,
-  overdue_pct                    DOUBLE,
-  bad_rate_overall               DOUBLE,
-  bad_rate_baixo                 DOUBLE,
-  bad_rate_medio                 DOUBLE,
-  bad_rate_alto                  DOUBLE,
-  lift_baixo                     DOUBLE,
-  lift_medio                     DOUBLE,
-  lift_alto                      DOUBLE,
-  ks                             DOUBLE,
-  roc_auc                        DOUBLE,
-  gini                           DOUBLE,
-  psi_vs_train                   DOUBLE,
-  psi_vs_train_classification    STRING,
-  psi_rolling                    DOUBLE,
-  psi_rolling_classification     STRING,
-  pct_improved                   DOUBLE,
-  pct_maintained                 DOUBLE,
-  pct_worsened                   DOUBLE,
-  market_name                    STRING,
-  metric_key                     STRING,
-  updated_at                     TIMESTAMP
-)
-USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+# MAGIC %sql
+# MAGIC -- Tabela 2: metricas agregadas por safra (1 linha por reference_month)
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_metrics_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_metrics_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,
+# MAGIC   total_clients                  INT,
+# MAGIC   pop_baixo                      INT,
+# MAGIC   pop_medio                      INT,
+# MAGIC   pop_alto                       INT,
+# MAGIC   pct_baixo                      DOUBLE,
+# MAGIC   pct_medio                      DOUBLE,
+# MAGIC   pct_alto                       DOUBLE,
+# MAGIC   avg_score                      DOUBLE,
+# MAGIC   median_score                   DOUBLE,
+# MAGIC   avg_credit_limit               DOUBLE,
+# MAGIC   median_credit_limit            DOUBLE,
+# MAGIC   total_credit_limit             DOUBLE,
+# MAGIC   avg_credit_limit_clp           DOUBLE,
+# MAGIC   median_credit_limit_clp        DOUBLE,
+# MAGIC   total_credit_limit_clp         DOUBLE,
+# MAGIC   total_billed_usd               DOUBLE,
+# MAGIC   overdue_usd                    DOUBLE,
+# MAGIC   overdue_pct                    DOUBLE,
+# MAGIC   bad_rate_overall               DOUBLE,
+# MAGIC   bad_rate_baixo                 DOUBLE,
+# MAGIC   bad_rate_medio                 DOUBLE,
+# MAGIC   bad_rate_alto                  DOUBLE,
+# MAGIC   lift_baixo                     DOUBLE,
+# MAGIC   lift_medio                     DOUBLE,
+# MAGIC   lift_alto                      DOUBLE,
+# MAGIC   ks                             DOUBLE,
+# MAGIC   roc_auc                        DOUBLE,
+# MAGIC   gini                           DOUBLE,
+# MAGIC   psi_vs_train                   DOUBLE,
+# MAGIC   psi_vs_train_classification    STRING,
+# MAGIC   psi_rolling                    DOUBLE,
+# MAGIC   psi_rolling_classification     STRING,
+# MAGIC   pct_improved                   DOUBLE,
+# MAGIC   pct_maintained                 DOUBLE,
+# MAGIC   pct_worsened                   DOUBLE,
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
-%sql
--- Tabela 3: metricas por banda (long format) — substitui 7 tabelas Excel
-DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_band_me_br;
-CREATE TABLE ds_catalog_dev.credit_engine.monitoring_band_me_br (
-  reference_month                DATE,
-  period                         STRING,           -- 'Train' ou 'YYYY/MM'
-  band                           INT,              -- 1, 2, 3, -1 (missing), 100 (total)
-  band_name                      STRING,           -- '1-BAIXO', '2-MEDIO', '3-ALTO', 'Missing', 'TOTAL'
-  pct_pop                        DOUBLE,           -- = dist_por_decil
-  pct_pop_diff_pp                DOUBLE,           -- = dist_por_decil_diff_pp
-  bad_rate                       DOUBLE,           -- = perc_bad_decil (%)
-  bad_rate_diff_pp               DOUBLE,           -- = perc_bad_decil_diff_pp
-  pct_bad_share                  DOUBLE,           -- = df_dist_bad_decil
-  pct_bad_share_diff_pp          DOUBLE,           -- = df_dist_bad_decil_diff_pp
-  psi_contribution               DOUBLE,           -- = iep_por_decil (contribuicao da banda; band=100 e o total)
-  market_name                    STRING,
-  metric_key                     STRING,
-  updated_at                     TIMESTAMP
-)
-USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+# MAGIC %sql
+# MAGIC -- Tabela 3: metricas por banda (long format) — substitui 7 tabelas Excel
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_band_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_band_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,           -- 'Train' ou 'YYYY/MM'
+# MAGIC   band                           INT,              -- 1, 2, 3, -1 (missing), 100 (total)
+# MAGIC   band_name                      STRING,           -- '1-BAIXO', '2-MEDIO', '3-ALTO', 'Missing', 'TOTAL'
+# MAGIC   pct_pop                        DOUBLE,           -- = dist_por_decil
+# MAGIC   pct_pop_diff_pp                DOUBLE,           -- = dist_por_decil_diff_pp
+# MAGIC   bad_rate                       DOUBLE,           -- = perc_bad_decil (%)
+# MAGIC   bad_rate_diff_pp               DOUBLE,           -- = perc_bad_decil_diff_pp
+# MAGIC   pct_bad_share                  DOUBLE,           -- = df_dist_bad_decil
+# MAGIC   pct_bad_share_diff_pp          DOUBLE,           -- = df_dist_bad_decil_diff_pp
+# MAGIC   psi_contribution               DOUBLE,           -- = iep_por_decil (contribuicao da banda; band=100 e o total)
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
-%sql
--- Tabela 4: metricas por feature x bin (long format) — substitui 7 tabelas Excel
-DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_features_me_br;
-CREATE TABLE ds_catalog_dev.credit_engine.monitoring_features_me_br (
-  reference_month                DATE,
-  period                         STRING,
-  feature_name                   STRING,           -- ex: 'pct_months_overdue_10_20', 'portfolio_score', 'score'
-  grupo                          STRING,           -- 'severidade_atraso', 'peso_historico', 'exposicao', 'benchmark', 'score_individual'
-  coeficiente                    DOUBLE,           -- peso efetivo (media mediana_cluster); NULL se nao aplicavel
-  bin_label                      STRING,           -- ex: '(-inf, 0.5]', '(0.5, inf]', 'Missing'
-  pct_pop                        DOUBLE,           -- = dist_vars
-  pct_pop_diff_pp                DOUBLE,           -- = dist_vars_diff_pp
-  volume                         DOUBLE,           -- = vol_vars (contagem absoluta)
-  lift                           DOUBLE,           -- = risco_relativo (bad_rate_bin / bad_rate_geral)
-  lift_trigger                   STRING,           -- = risco_relativo_trigger ('true' se fora [0.5, 2.0])
-  psi_feature                    DOUBLE,           -- = iep (PSI da feature inteira; repetido em cada bin)
-  psi_within_group               DOUBLE,           -- = iep_vars (PSI da feature dentro do grupo)
-  market_name                    STRING,
-  metric_key                     STRING,
-  updated_at                     TIMESTAMP
-)
-USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+# MAGIC %sql
+# MAGIC -- Tabela 4: metricas por feature x bin (long format) — substitui 7 tabelas Excel
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_features_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_features_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,
+# MAGIC   feature_name                   STRING,           -- ex: 'pct_months_overdue_10_20', 'portfolio_score', 'score'
+# MAGIC   grupo                          STRING,           -- 'severidade_atraso', 'peso_historico', 'exposicao', 'benchmark', 'score_individual'
+# MAGIC   coeficiente                    DOUBLE,           -- peso efetivo (media mediana_cluster); NULL se nao aplicavel
+# MAGIC   bin_label                      STRING,           -- ex: '(-inf, 0.5]', '(0.5, inf]', 'Missing'
+# MAGIC   pct_pop                        DOUBLE,           -- = dist_vars
+# MAGIC   pct_pop_diff_pp                DOUBLE,           -- = dist_vars_diff_pp
+# MAGIC   volume                         DOUBLE,           -- = vol_vars (contagem absoluta)
+# MAGIC   lift                           DOUBLE,           -- = risco_relativo (bad_rate_bin / bad_rate_geral)
+# MAGIC   lift_trigger                   STRING,           -- = risco_relativo_trigger ('true' se fora [0.5, 2.0])
+# MAGIC   psi_feature                    DOUBLE,           -- = iep (PSI da feature inteira; repetido em cada bin)
+# MAGIC   psi_within_group               DOUBLE,           -- = iep_vars (PSI da feature dentro do grupo)
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
-%sql
--- Tabela 5: matriz de migracao mes-1 -> mes (long format) — substitui decile_migrations
-DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br;
-CREATE TABLE ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br (
-  reference_month                DATE,
-  period                         STRING,
-  previous_band                  INT,              -- -1 = novo cliente (nao havia banda no mes anterior)
-  current_band                   INT,
-  count                          INT,
-  pct_of_pop                     DOUBLE,
-  market_name                    STRING,
-  metric_key                     STRING,
-  updated_at                     TIMESTAMP
-)
-USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+# MAGIC %sql
+# MAGIC -- Tabela 5: matriz de migracao mes-1 -> mes (long format) — substitui decile_migrations
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,
+# MAGIC   previous_band                  INT,              -- -1 = novo cliente (nao havia banda no mes anterior)
+# MAGIC   current_band                   INT,
+# MAGIC   count                          INT,
+# MAGIC   pct_of_pop                     DOUBLE,
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
+# MAGIC %md
 # MAGIC ## Cálculo unificado das 4 tabelas de métricas
 
 # COMMAND ----------
@@ -815,172 +814,173 @@ print("\nOK: 4 tabelas de metricas atualizadas.")
 
 # COMMAND ----------
 
+# MAGIC %md
 # MAGIC ## Sanity checks
 
 # COMMAND ----------
 
-%sql
-SELECT 'monitoring_me_br' AS tabela, COUNT(*) AS linhas, COUNT(DISTINCT reference_month) AS safras FROM ds_catalog_dev.credit_engine.monitoring_me_br
-UNION ALL SELECT 'monitoring_metrics_me_br',         COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
-UNION ALL SELECT 'monitoring_band_me_br',            COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_band_me_br
-UNION ALL SELECT 'monitoring_features_me_br',        COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
-UNION ALL SELECT 'monitoring_band_migrations_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
+# MAGIC %sql
+# MAGIC SELECT 'monitoring_me_br' AS tabela, COUNT(*) AS linhas, COUNT(DISTINCT reference_month) AS safras FROM ds_catalog_dev.credit_engine.monitoring_me_br
+# MAGIC UNION ALL SELECT 'monitoring_metrics_me_br',         COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC UNION ALL SELECT 'monitoring_band_me_br',            COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_band_me_br
+# MAGIC UNION ALL SELECT 'monitoring_features_me_br',        COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC UNION ALL SELECT 'monitoring_band_migrations_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
 
 # COMMAND ----------
 
-%sql
--- Performance (KS/ROC/Gini) e PSI por safra OOT
-SELECT period, reference_month,
-       ROUND(ks,4)               AS ks,
-       ROUND(roc_auc,4)          AS roc,
-       ROUND(gini,4)             AS gini,
-       ROUND(psi_vs_train,4)     AS psi_vs_train,
-       psi_vs_train_classification,
-       ROUND(bad_rate_overall,2) AS bad_rate_pct
-FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
-WHERE period <> 'Train'
-ORDER BY reference_month DESC
-LIMIT 24
+# MAGIC %sql
+# MAGIC -- Performance (KS/ROC/Gini) e PSI por safra OOT
+# MAGIC SELECT period, reference_month,
+# MAGIC        ROUND(ks,4)               AS ks,
+# MAGIC        ROUND(roc_auc,4)          AS roc,
+# MAGIC        ROUND(gini,4)             AS gini,
+# MAGIC        ROUND(psi_vs_train,4)     AS psi_vs_train,
+# MAGIC        psi_vs_train_classification,
+# MAGIC        ROUND(bad_rate_overall,2) AS bad_rate_pct
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC WHERE period <> 'Train'
+# MAGIC ORDER BY reference_month DESC
+# MAGIC LIMIT 24
 
 # COMMAND ----------
 
-%sql
--- Distribuicao por banda na safra mais recente
-SELECT period, band_name,
-       ROUND(pct_pop,2)              AS pct_pop,
-       ROUND(pct_pop_diff_pp,2)      AS pct_pop_diff_pp,
-       ROUND(bad_rate,2)             AS bad_rate,
-       ROUND(bad_rate_diff_pp,2)     AS bad_rate_diff_pp,
-       ROUND(pct_bad_share,2)        AS pct_bad_share,
-       ROUND(psi_contribution,4)     AS psi_contribution
-FROM ds_catalog_dev.credit_engine.monitoring_band_me_br
-WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_me_br WHERE period <> 'Train')
-ORDER BY band
+# MAGIC %sql
+# MAGIC -- Distribuicao por banda na safra mais recente
+# MAGIC SELECT period, band_name,
+# MAGIC        ROUND(pct_pop,2)              AS pct_pop,
+# MAGIC        ROUND(pct_pop_diff_pp,2)      AS pct_pop_diff_pp,
+# MAGIC        ROUND(bad_rate,2)             AS bad_rate,
+# MAGIC        ROUND(bad_rate_diff_pp,2)     AS bad_rate_diff_pp,
+# MAGIC        ROUND(pct_bad_share,2)        AS pct_bad_share,
+# MAGIC        ROUND(psi_contribution,4)     AS psi_contribution
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_band_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_me_br WHERE period <> 'Train')
+# MAGIC ORDER BY band
 
 # COMMAND ----------
 
-%sql
--- Features com maior PSI na safra mais recente
-SELECT period, feature_name, grupo,
-       ROUND(MAX(psi_feature), 4)  AS psi,
-       CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
-            WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
-            ELSE 'Significativo' END AS classificacao
-FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
-WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br WHERE period <> 'Train')
-GROUP BY period, feature_name, grupo
-ORDER BY psi DESC
+# MAGIC %sql
+# MAGIC -- Features com maior PSI na safra mais recente
+# MAGIC SELECT period, feature_name, grupo,
+# MAGIC        ROUND(MAX(psi_feature), 4)  AS psi,
+# MAGIC        CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
+# MAGIC             WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
+# MAGIC             ELSE 'Significativo' END AS classificacao
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br WHERE period <> 'Train')
+# MAGIC GROUP BY period, feature_name, grupo
+# MAGIC ORDER BY psi DESC
 
 # COMMAND ----------
 
-%sql
--- Triggers de risco relativo na safra mais recente
-SELECT feature_name, grupo, bin_label, ROUND(lift,3) AS lift, lift_trigger, ROUND(volume,0) AS volume
-FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
-WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br WHERE period <> 'Train')
-  AND lift_trigger = 'true'
-ORDER BY ABS(lift - 1) DESC
-LIMIT 20
+# MAGIC %sql
+# MAGIC -- Triggers de risco relativo na safra mais recente
+# MAGIC SELECT feature_name, grupo, bin_label, ROUND(lift,3) AS lift, lift_trigger, ROUND(volume,0) AS volume
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br WHERE period <> 'Train')
+# MAGIC   AND lift_trigger = 'true'
+# MAGIC ORDER BY ABS(lift - 1) DESC
+# MAGIC LIMIT 20
 
 # COMMAND ----------
 
-%sql
--- Matriz de migracao da safra mais recente (heatmap)
-SELECT previous_band, current_band, count, ROUND(pct_of_pop, 2) AS pct
-FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
-WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br)
-ORDER BY previous_band, current_band
+# MAGIC %sql
+# MAGIC -- Matriz de migracao da safra mais recente (heatmap)
+# MAGIC SELECT previous_band, current_band, count, ROUND(pct_of_pop, 2) AS pct
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br)
+# MAGIC ORDER BY previous_band, current_band
 
 # COMMAND ----------
 
-%sql
--- V1: Diagnostico de campos NULL em monitoring_metrics_me_br
--- Safras sem target = target ainda nao maduro (normal para meses recentes)
--- Safras sem billing = join com abt_inference sem match (verificar pipeline)
-SELECT
-  period,
-  reference_month,
-  total_clients,
-  CASE WHEN bad_rate_overall IS NULL THEN 'SEM TARGET' ELSE 'com target' END AS status_target,
-  CASE WHEN ks IS NULL            THEN 'NULL' ELSE CAST(ROUND(ks,4) AS STRING)      END AS ks,
-  CASE WHEN roc_auc IS NULL       THEN 'NULL' ELSE CAST(ROUND(roc_auc,4) AS STRING) END AS roc_auc,
-  CASE WHEN total_billed_usd IS NULL THEN 'SEM BILLING' ELSE CAST(ROUND(total_billed_usd,0) AS STRING) END AS total_billed,
-  CASE WHEN avg_credit_limit IS NULL THEN 'SEM LIMITE'  ELSE CAST(ROUND(avg_credit_limit,0) AS STRING) END AS avg_limit,
-  CASE WHEN psi_rolling IS NULL   THEN 'NULL (1o periodo)' ELSE CAST(ROUND(psi_rolling,4) AS STRING) END AS psi_rolling
-FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
-ORDER BY reference_month
+# MAGIC %sql
+# MAGIC -- V1: Diagnostico de campos NULL em monitoring_metrics_me_br
+# MAGIC -- Safras sem target = target ainda nao maduro (normal para meses recentes)
+# MAGIC -- Safras sem billing = join com abt_inference sem match (verificar pipeline)
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   reference_month,
+# MAGIC   total_clients,
+# MAGIC   CASE WHEN bad_rate_overall IS NULL THEN 'SEM TARGET' ELSE 'com target' END AS status_target,
+# MAGIC   CASE WHEN ks IS NULL            THEN 'NULL' ELSE CAST(ROUND(ks,4) AS STRING)      END AS ks,
+# MAGIC   CASE WHEN roc_auc IS NULL       THEN 'NULL' ELSE CAST(ROUND(roc_auc,4) AS STRING) END AS roc_auc,
+# MAGIC   CASE WHEN total_billed_usd IS NULL THEN 'SEM BILLING' ELSE CAST(ROUND(total_billed_usd,0) AS STRING) END AS total_billed,
+# MAGIC   CASE WHEN avg_credit_limit IS NULL THEN 'SEM LIMITE'  ELSE CAST(ROUND(avg_credit_limit,0) AS STRING) END AS avg_limit,
+# MAGIC   CASE WHEN psi_rolling IS NULL   THEN 'NULL (1o periodo)' ELSE CAST(ROUND(psi_rolling,4) AS STRING) END AS psi_rolling
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC ORDER BY reference_month
 
 # COMMAND ----------
 
-%sql
--- V2: Evolucao do PSI vs Train por safra OOT (todas as safras)
-SELECT
-  period,
-  reference_month,
-  ROUND(psi_vs_train, 4)              AS psi_vs_train,
-  psi_vs_train_classification,
-  ROUND(psi_rolling, 4)               AS psi_rolling,
-  psi_rolling_classification,
-  ROUND(bad_rate_overall, 2)          AS bad_rate_pct,
-  ROUND(pct_baixo, 1) AS pct_baixo,
-  ROUND(pct_medio, 1) AS pct_medio,
-  ROUND(pct_alto,  1) AS pct_alto
-FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
-ORDER BY reference_month
+# MAGIC %sql
+# MAGIC -- V2: Evolucao do PSI vs Train por safra OOT (todas as safras)
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   reference_month,
+# MAGIC   ROUND(psi_vs_train, 4)              AS psi_vs_train,
+# MAGIC   psi_vs_train_classification,
+# MAGIC   ROUND(psi_rolling, 4)               AS psi_rolling,
+# MAGIC   psi_rolling_classification,
+# MAGIC   ROUND(bad_rate_overall, 2)          AS bad_rate_pct,
+# MAGIC   ROUND(pct_baixo, 1) AS pct_baixo,
+# MAGIC   ROUND(pct_medio, 1) AS pct_medio,
+# MAGIC   ROUND(pct_alto,  1) AS pct_alto
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC ORDER BY reference_month
 
 # COMMAND ----------
 
-%sql
--- V3: PSI por feature ao longo do tempo (ultimas 6 safras OOT)
-SELECT
-  period,
-  feature_name,
-  grupo,
-  ROUND(MAX(psi_feature), 4)       AS psi_feature,
-  ROUND(MAX(psi_within_group), 4)  AS psi_share_do_grupo,
-  CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
-       WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
-       ELSE 'Significativo' END     AS classificacao
-FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
-WHERE period IN (
-  SELECT DISTINCT period FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
-  WHERE period <> 'Train'
-  ORDER BY period DESC LIMIT 6
-)
-GROUP BY period, feature_name, grupo
-ORDER BY feature_name, period
+# MAGIC %sql
+# MAGIC -- V3: PSI por feature ao longo do tempo (ultimas 6 safras OOT)
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   feature_name,
+# MAGIC   grupo,
+# MAGIC   ROUND(MAX(psi_feature), 4)       AS psi_feature,
+# MAGIC   ROUND(MAX(psi_within_group), 4)  AS psi_share_do_grupo,
+# MAGIC   CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
+# MAGIC        WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
+# MAGIC        ELSE 'Significativo' END     AS classificacao
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC WHERE period IN (
+# MAGIC   SELECT DISTINCT period FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC   WHERE period <> 'Train'
+# MAGIC   ORDER BY period DESC LIMIT 6
+# MAGIC )
+# MAGIC GROUP BY period, feature_name, grupo
+# MAGIC ORDER BY feature_name, period
 
 # COMMAND ----------
 
-%sql
--- V4: Resumo de triggers por safra (contagem de bins com lift fora [0.5, 2.0])
-SELECT
-  period,
-  COUNT(*) FILTER (WHERE lift_trigger = 'true')  AS bins_em_alerta,
-  COUNT(*) FILTER (WHERE lift_trigger = 'false') AS bins_ok,
-  COUNT(*) FILTER (WHERE lift IS NULL)            AS bins_sem_target,
-  ROUND(COUNT(*) FILTER (WHERE lift_trigger = 'true') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE lift IS NOT NULL), 0), 1) AS pct_bins_alerta
-FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
-GROUP BY period
-ORDER BY period
+# MAGIC %sql
+# MAGIC -- V4: Resumo de triggers por safra (contagem de bins com lift fora [0.5, 2.0])
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   COUNT(*) FILTER (WHERE lift_trigger = 'true')  AS bins_em_alerta,
+# MAGIC   COUNT(*) FILTER (WHERE lift_trigger = 'false') AS bins_ok,
+# MAGIC   COUNT(*) FILTER (WHERE lift IS NULL)            AS bins_sem_target,
+# MAGIC   ROUND(COUNT(*) FILTER (WHERE lift_trigger = 'true') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE lift IS NOT NULL), 0), 1) AS pct_bins_alerta
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC GROUP BY period
+# MAGIC ORDER BY period
 
 # COMMAND ----------
 
-%sql
--- V5: Estabilidade das bandas ao longo do tempo
--- Verifica se a distribuicao BAIXO/MEDIO/ALTO esta estavel (diff_pp vs Train)
-SELECT
-  b.period,
-  b.reference_month,
-  MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop, 1)          END) AS pct_baixo,
-  MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS baixo_diff_pp,
-  MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop, 1)          END) AS pct_medio,
-  MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS medio_diff_pp,
-  MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop, 1)          END) AS pct_alto,
-  MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS alto_diff_pp,
-  MAX(CASE WHEN b.band = 100 THEN ROUND(b.psi_contribution, 4) END) AS psi_total,
-  MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate, 2)         END) AS bad_rate_total_pct,
-  MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate_diff_pp, 2) END) AS bad_rate_diff_pp
-FROM ds_catalog_dev.credit_engine.monitoring_band_me_br b
-GROUP BY b.period, b.reference_month
-ORDER BY b.reference_month
+# MAGIC %sql
+# MAGIC -- V5: Estabilidade das bandas ao longo do tempo
+# MAGIC -- Verifica se a distribuicao BAIXO/MEDIO/ALTO esta estavel (diff_pp vs Train)
+# MAGIC SELECT
+# MAGIC   b.period,
+# MAGIC   b.reference_month,
+# MAGIC   MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop, 1)          END) AS pct_baixo,
+# MAGIC   MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS baixo_diff_pp,
+# MAGIC   MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop, 1)          END) AS pct_medio,
+# MAGIC   MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS medio_diff_pp,
+# MAGIC   MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop, 1)          END) AS pct_alto,
+# MAGIC   MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS alto_diff_pp,
+# MAGIC   MAX(CASE WHEN b.band = 100 THEN ROUND(b.psi_contribution, 4) END) AS psi_total,
+# MAGIC   MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate, 2)         END) AS bad_rate_total_pct,
+# MAGIC   MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate_diff_pp, 2) END) AS bad_rate_diff_pp
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_band_me_br b
+# MAGIC GROUP BY b.period, b.reference_month
+# MAGIC ORDER BY b.reference_month
