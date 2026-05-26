@@ -429,6 +429,10 @@ def norm_vc(series):
     vc = series.value_counts(normalize=True)
     return {str(k): float(v) for k, v in vc.items()}
 
+def safe_sum(series):
+    non_null = series.dropna()
+    return float(non_null.sum()) if len(non_null) > 0 else None
+
 # ============================================================
 # Carga
 # ============================================================
@@ -533,14 +537,14 @@ for i, period in enumerate(periods):
 
     avg_cl    = safe_round(sub['credit_limit_end'].mean(), 2)
     med_cl    = safe_round(sub['credit_limit_end'].median(), 2)
-    tot_cl    = safe_round(sub['credit_limit_end'].sum(), 2)
+    tot_cl    = safe_round(safe_sum(sub['credit_limit_end']), 2)
     avg_clp   = safe_round(sub['credit_limit_end_clp'].mean(), 2)
     med_clp   = safe_round(sub['credit_limit_end_clp'].median(), 2)
-    tot_clp   = safe_round(sub['credit_limit_end_clp'].sum(), 2)
+    tot_clp   = safe_round(safe_sum(sub['credit_limit_end_clp']), 2)
 
-    tot_billed = safe_round(sub['total_amount'].sum(), 2)
-    tot_overdue = safe_round(sub['overdue_amount'].sum(), 2)
-    overdue_pct_period = safe_round(tot_overdue / tot_billed * 100, 4) if tot_billed and tot_billed > 0 else None
+    tot_billed  = safe_round(safe_sum(sub['total_amount']), 2)
+    tot_overdue = safe_round(safe_sum(sub['overdue_amount']), 2)
+    overdue_pct_period = safe_round(tot_overdue / tot_billed * 100, 4) if (tot_billed is not None and tot_billed > 0) else None
 
     bad_rate_overall = bad_rate_baixo = bad_rate_medio = bad_rate_alto = None
     lift_baixo = lift_medio = lift_alto = None
@@ -549,11 +553,11 @@ for i, period in enumerate(periods):
         sub_t[TARGET_COL] = sub_t[TARGET_COL].astype(int)
         y = sub_t[TARGET_COL].values
         s = sub_t[SCORE_COL].values
-        bad_rate_overall = safe_round(float(y.mean()))
+        bad_rate_overall = safe_round(float(y.mean()) * 100)   # stored as % (0-100)
         for b, attr in [(1, 'bad_rate_baixo'), (2, 'bad_rate_medio'), (3, 'bad_rate_alto')]:
             mask = sub_t['band'] == b
             if mask.any():
-                v = float(sub_t.loc[mask, TARGET_COL].mean())
+                v = float(sub_t.loc[mask, TARGET_COL].mean()) * 100   # %
                 if attr == 'bad_rate_baixo': bad_rate_baixo = safe_round(v)
                 elif attr == 'bad_rate_medio': bad_rate_medio = safe_round(v)
                 elif attr == 'bad_rate_alto':  bad_rate_alto  = safe_round(v)
@@ -647,12 +651,14 @@ for i, period in enumerate(periods):
         })
 
     # Linha total (band = 100)
+    train_bad_pct = TRAIN_BAD_OVERALL * 100 if TRAIN_BAD_OVERALL is not None else None
+    total_br_diff = (bad_rate_overall - train_bad_pct) if (bad_rate_overall is not None and train_bad_pct is not None and not is_train) else (0.0 if is_train else None)
     band_rows.append({
         'reference_month': ref_m, 'period': period,
         'band': 100, 'band_name': 'TOTAL',
         'pct_pop': 100.0, 'pct_pop_diff_pp': 0.0,
-        'bad_rate': safe_round(bad_rate_overall * 100) if bad_rate_overall is not None else None,
-        'bad_rate_diff_pp': None,
+        'bad_rate': bad_rate_overall,  # already in % (0-100)
+        'bad_rate_diff_pp': safe_round(total_br_diff),
         'pct_bad_share': 100.0, 'pct_bad_share_diff_pp': 0.0,
         'psi_contribution': safe_round(psi_total),
         'market_name': MARKET, 'metric_key': 'monitoring_band', 'updated_at': NOW,
@@ -664,22 +670,17 @@ for i, period in enumerate(periods):
     # Bad rate overall do periodo (denominador do lift)
     period_bad_overall = float(sub_t[TARGET_COL].mean()) if len(sub_t) > 0 else None
 
-    # PSI agregado por grupo (peso = 1/n_features_no_grupo, simples)
-    group_counts = {}
-    for _, g, _ in FEATURES:
-        group_counts[g] = group_counts.get(g, 0) + 1
-
-    # PSI por feature primeiro (precisamos pra psi_within_group)
+    # PSI por feature (versus Train baseline)
     psi_per_feature = {}
     for fname, _, _ in FEATURES:
         dist_now = norm_vc(apply_bins(sub[fname], BIN_EDGES[fname]))
         psi_per_feature[fname] = calc_psi(TRAIN_FEAT_DIST[fname], dist_now) if not is_train else 0.0
 
-    # PSI medio do grupo (media simples das features do grupo)
-    psi_per_group = {}
+    # psi_within_group = fracao do PSI do grupo que esta feature explica
+    psi_group_sums = {}
     for g in set(grupo for _, grupo, _ in FEATURES):
         feats_in_group = [f for f, gg, _ in FEATURES if gg == g]
-        psi_per_group[g] = float(np.mean([psi_per_feature[f] for f in feats_in_group]))
+        psi_group_sums[g] = float(sum(psi_per_feature[f] for f in feats_in_group))
 
     for fname, grupo, _ in FEATURES:
         coef = COEF_MAP.get(fname)
@@ -719,7 +720,7 @@ for i, period in enumerate(periods):
                 'lift': safe_round(lift_val),
                 'lift_trigger': lift_trigger,
                 'psi_feature': safe_round(psi_per_feature[fname]),
-                'psi_within_group': safe_round(psi_per_group[grupo]),
+                'psi_within_group': safe_round(psi_per_feature[fname] / psi_group_sums[grupo]) if psi_group_sums[grupo] > 1e-9 else 0.0,
                 'market_name': MARKET, 'metric_key': 'monitoring_features', 'updated_at': NOW,
             })
 
@@ -838,7 +839,7 @@ SELECT period, reference_month,
        ROUND(gini,4)             AS gini,
        ROUND(psi_vs_train,4)     AS psi_vs_train,
        psi_vs_train_classification,
-       ROUND(bad_rate_overall*100,2) AS bad_rate_pct
+       ROUND(bad_rate_overall,2) AS bad_rate_pct
 FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
 WHERE period <> 'Train'
 ORDER BY reference_month DESC
@@ -884,6 +885,90 @@ SELECT previous_band, current_band, count, ROUND(pct_of_pop, 2) AS pct
 FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
 WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br)
 ORDER BY previous_band, current_band"""))
+
+CELLS.append(code("""%sql
+-- V1: Diagnostico de campos NULL em monitoring_metrics_me_br
+-- Safras sem target = target ainda nao maduro (normal para meses recentes)
+-- Safras sem billing = join com abt_inference sem match (verificar pipeline)
+SELECT
+  period,
+  reference_month,
+  total_clients,
+  CASE WHEN bad_rate_overall IS NULL THEN 'SEM TARGET' ELSE 'com target' END AS status_target,
+  CASE WHEN ks IS NULL            THEN 'NULL' ELSE CAST(ROUND(ks,4) AS STRING)      END AS ks,
+  CASE WHEN roc_auc IS NULL       THEN 'NULL' ELSE CAST(ROUND(roc_auc,4) AS STRING) END AS roc_auc,
+  CASE WHEN total_billed_usd IS NULL THEN 'SEM BILLING' ELSE CAST(ROUND(total_billed_usd,0) AS STRING) END AS total_billed,
+  CASE WHEN avg_credit_limit IS NULL THEN 'SEM LIMITE'  ELSE CAST(ROUND(avg_credit_limit,0) AS STRING) END AS avg_limit,
+  CASE WHEN psi_rolling IS NULL   THEN 'NULL (1o periodo)' ELSE CAST(ROUND(psi_rolling,4) AS STRING) END AS psi_rolling
+FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+ORDER BY reference_month"""))
+
+CELLS.append(code("""%sql
+-- V2: Evolucao do PSI vs Train por safra OOT (todas as safras)
+SELECT
+  period,
+  reference_month,
+  ROUND(psi_vs_train, 4)              AS psi_vs_train,
+  psi_vs_train_classification,
+  ROUND(psi_rolling, 4)               AS psi_rolling,
+  psi_rolling_classification,
+  ROUND(bad_rate_overall, 2)          AS bad_rate_pct,
+  ROUND(pct_baixo, 1) AS pct_baixo,
+  ROUND(pct_medio, 1) AS pct_medio,
+  ROUND(pct_alto,  1) AS pct_alto
+FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+ORDER BY reference_month"""))
+
+CELLS.append(code("""%sql
+-- V3: PSI por feature ao longo do tempo (ultimas 6 safras OOT)
+SELECT
+  period,
+  feature_name,
+  grupo,
+  ROUND(MAX(psi_feature), 4)       AS psi_feature,
+  ROUND(MAX(psi_within_group), 4)  AS psi_share_do_grupo,
+  CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
+       WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
+       ELSE 'Significativo' END     AS classificacao
+FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+WHERE period IN (
+  SELECT DISTINCT period FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+  WHERE period <> 'Train'
+  ORDER BY period DESC LIMIT 6
+)
+GROUP BY period, feature_name, grupo
+ORDER BY feature_name, period"""))
+
+CELLS.append(code("""%sql
+-- V4: Resumo de triggers por safra (contagem de bins com lift fora [0.5, 2.0])
+SELECT
+  period,
+  COUNT(*) FILTER (WHERE lift_trigger = 'true')  AS bins_em_alerta,
+  COUNT(*) FILTER (WHERE lift_trigger = 'false') AS bins_ok,
+  COUNT(*) FILTER (WHERE lift IS NULL)            AS bins_sem_target,
+  ROUND(COUNT(*) FILTER (WHERE lift_trigger = 'true') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE lift IS NOT NULL), 0), 1) AS pct_bins_alerta
+FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+GROUP BY period
+ORDER BY period"""))
+
+CELLS.append(code("""%sql
+-- V5: Estabilidade das bandas ao longo do tempo
+-- Verifica se a distribuicao BAIXO/MEDIO/ALTO esta estavel (diff_pp vs Train)
+SELECT
+  b.period,
+  b.reference_month,
+  MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop, 1)          END) AS pct_baixo,
+  MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS baixo_diff_pp,
+  MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop, 1)          END) AS pct_medio,
+  MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS medio_diff_pp,
+  MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop, 1)          END) AS pct_alto,
+  MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS alto_diff_pp,
+  MAX(CASE WHEN b.band = 100 THEN ROUND(b.psi_contribution, 4) END) AS psi_total,
+  MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate, 2)         END) AS bad_rate_total_pct,
+  MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate_diff_pp, 2) END) AS bad_rate_diff_pp
+FROM ds_catalog_dev.credit_engine.monitoring_band_me_br b
+GROUP BY b.period, b.reference_month
+ORDER BY b.reference_month"""))
 
 # ============================================================
 # Salvar
