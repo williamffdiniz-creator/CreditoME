@@ -1,101 +1,81 @@
 # Databricks notebook source
-# DBTITLE 0,Pipeline: Monitoring ME BR
 # MAGIC %md
-# MAGIC ## Pipeline: Monitoramento do Modelo - ME BR
+# MAGIC ## Pipeline: Monitoramento ME BR — v2 (consolidado)
 # MAGIC
-# MAGIC Consolida o detalhe cliente x safra em `ds_catalog_dev.credit_engine.monitoring_me_br` e gera as
-# MAGIC **16 tabelas de monitoramento** no mesmo formato (tidy/long) do padrao
-# MAGIC corporativo enviado no Excel `Monitoramento_me`.
+# MAGIC Este notebook gera **5 tabelas** que substituem as 16 tabelas Excel do padrão antigo + as 2 tabelas wide do v1.
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC ### Adaptacao: modelo logistico -> formula ponderada
+# MAGIC ### Tabelas produzidas
 # MAGIC
-# MAGIC O Excel original monitora um modelo de **regressao logistica** (dummies +
-# MAGIC coeficientes + decis). O modelo ME BR atual NAO e logistico: e uma
-# MAGIC **formula ponderada pela severidade dos atrasos, peso historico e grupo
-# MAGIC economico** (`adjusted_score = C*score + (1-C)*portfolio_score`, onde
-# MAGIC `score = Σ(pct_faixa × mediana_faixa)/10000`).
+# MAGIC | Tabela | Granularidade | Comportamento | Substitui |
+# MAGIC |---|---|---|---|
+# MAGIC | `monitoring_me_br` | cliente × safra | MISTO (INSERT + UPDATE seletivo) | — (detalhe) |
+# MAGIC | `monitoring_metrics_me_br` | 1 linha por safra (wide) | OVERWRITE | — (resumo) |
+# MAGIC | `monitoring_band_me_br` | safra × banda | OVERWRITE | dist_por_decil, dist_por_decil_diff_pp, perc_bad_decil, perc_bad_decil_diff_pp, df_dist_bad_decil, df_dist_bad_decil_diff_pp, iep_por_decil |
+# MAGIC | `monitoring_features_me_br` | safra × feature × bin | OVERWRITE | dist_vars, dist_vars_diff_pp, vol_vars, iep, iep_vars, risco_relativo, risco_relativo_trigger |
+# MAGIC | `monitoring_band_migrations_me_br` | safra × prev_band × curr_band | OVERWRITE | decile_migrations |
 # MAGIC
-# MAGIC Mapeamento aplicado (mantem nomes de tabela/coluna onde faz sentido):
-# MAGIC
-# MAGIC | Conceito logistico | Equivalente na formula ponderada |
-# MAGIC |--------------------|----------------------------------|
-# MAGIC | Decil (1-10)       | **Banda de score** (1-BAIXO, 2-MEDIO, 3-ALTO) |
-# MAGIC | Dummies do modelo  | **Features que entram na formula** (pct_meses_*, peso, prazo, exposicao) |
-# MAGIC | Coeficiente        | **Peso efetivo** (mediana do cluster / historical_weight); NULL quando nao aplicavel |
-# MAGIC | Risco relativo     | **Lift** = bad_rate(faixa) / bad_rate(geral) |
-# MAGIC | IEP                | **PSI** (Indice de Estabilidade Populacional) |
-# MAGIC | Performance ROC/KS | ROC/KS/Gini sobre `integrated_score` |
-# MAGIC
-# MAGIC A coluna fisica continua chamando `decil` para compatibilidade de
-# MAGIC dashboards; os valores sao 1/2/3 (banda) e -1 para sem score.
+# MAGIC **Resultado: 16 tabelas Excel → 3 tabelas tidy (+ 2 já existentes).**
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC ### Tabelas produzidas (sufixo `_me_br`)
+# MAGIC ### Mapeamento dos KPIs (todos preservados)
 # MAGIC
-# MAGIC | Tabela | Conteudo |
-# MAGIC |--------|----------|
-# MAGIC | `monitoring_me_br` | Detalhe cliente x safra (features + scores + targets) |
-# MAGIC | `performance_me_br` | ROC, KS, Gini por periodo |
-# MAGIC | `dist_por_decil_me_br` | % populacao por banda |
-# MAGIC | `dist_por_decil_diff_pp_me_br` | Diferenca pp vs baseline (Train) |
-# MAGIC | `perc_bad_decil_me_br` | Bad rate por banda |
-# MAGIC | `perc_bad_decil_diff_pp_me_br` | Diferenca pp do bad rate vs Train |
-# MAGIC | `df_dist_bad_decil_me_br` | % dos bads concentrado em cada banda |
-# MAGIC | `df_dist_bad_decil_diff_pp_me_br` | Diferenca pp vs Train |
-# MAGIC | `decile_migrations_me_br` | Matriz de migracao de banda (mes-1 -> mes) |
-# MAGIC | `iep_por_decil_me_br` | PSI da distribuicao de bandas |
-# MAGIC | `iep_me_br` | PSI por feature do modelo |
-# MAGIC | `iep_vars_me_br` | PSI por feature dentro do grupo |
-# MAGIC | `dist_vars_me_br` | % populacao por faixa de cada feature |
-# MAGIC | `dist_vars_diff_pp_me_br` | Diferenca pp vs Train |
-# MAGIC | `vol_vars_me_br` | Volume (contagem) por faixa de cada feature |
-# MAGIC | `risco_relativo_me_br` | Lift por faixa de cada feature |
-# MAGIC | `risco_relativo_trigger_me_br` | Gatilho booleano de instabilidade do lift |
+# MAGIC **`monitoring_band_me_br`** (1 linha por banda):
+# MAGIC - `pct_pop` — % população na banda (= dist_por_decil)
+# MAGIC - `pct_pop_diff_pp` — diferença pp vs Train (= dist_por_decil_diff_pp)
+# MAGIC - `bad_rate` — % de bads na banda (= perc_bad_decil)
+# MAGIC - `bad_rate_diff_pp` — diferença pp vs Train (= perc_bad_decil_diff_pp)
+# MAGIC - `pct_bad_share` — % dos bads concentrado na banda (= df_dist_bad_decil)
+# MAGIC - `pct_bad_share_diff_pp` — diferença pp vs Train (= df_dist_bad_decil_diff_pp)
+# MAGIC - `psi_contribution` — contribuição da banda ao PSI total (= iep_por_decil)
+# MAGIC
+# MAGIC **`monitoring_features_me_br`** (1 linha por feature × bin):
+# MAGIC - `pct_pop` — % da população na faixa da feature (= dist_vars)
+# MAGIC - `pct_pop_diff_pp` — diferença pp vs Train (= dist_vars_diff_pp)
+# MAGIC - `volume` — contagem absoluta na faixa (= vol_vars)
+# MAGIC - `lift` — bad_rate(faixa) / bad_rate(geral) (= risco_relativo)
+# MAGIC - `lift_trigger` — 'true'/'false' se lift fora [0.5, 2.0] (= risco_relativo_trigger)
+# MAGIC - `psi_feature` — PSI da feature inteira (= iep)
+# MAGIC - `psi_within_group` — PSI da feature dentro do grupo (= iep_vars)
+# MAGIC
+# MAGIC **`monitoring_band_migrations_me_br`** (1 linha por par de bandas):
+# MAGIC - `count`, `pct_of_pop` — contagem e % de clientes na transição (= decile_migrations)
 # MAGIC
 # MAGIC ---
 # MAGIC
-# MAGIC ### Comportamento de ingestao (historico preservado)
+# MAGIC ### Configuração
 # MAGIC
-# MAGIC TODAS as tabelas usam `CREATE TABLE IF NOT EXISTS` + `MERGE`.
-# MAGIC **Nenhum DROP**: o historico nunca e apagado. Reexecutar uma safra
-# MAGIC atualiza apenas as linhas daquela safra (idempotente); safras antigas
-# MAGIC permanecem intactas.
+# MAGIC - **Score**: `integrated_score`
+# MAGIC - **Banda**: `integrated_score_band` (1-BAIXO, 2-MEDIO, 3-ALTO)
+# MAGIC - **Target**: `target_percent7mob1`
+# MAGIC - **Train cutoff**: `2024-01-01` (configurável via widget)
+# MAGIC - **Período**: 'Train' (todas as safras pré-cutoff agregadas) ou 'YYYY/MM' (cada safra OOT individualmente)
+# MAGIC - **PSI baseline**: distribuição do período 'Train'
+# MAGIC - **diff_pp baseline**: período 'Train'
 # MAGIC
-# MAGIC ### Pre-requisitos
-# MAGIC
-# MAGIC NB1 (abt + portfolio), NB2/NB2b (apply_model), NB3 (targets) executados.
+# MAGIC ### Pré-requisitos
+# MAGIC NB1, NB1b, NB2, NB2b, NB3 executados (alimentam abt_inference, apply_model, targets, portfolio_abt_group).
 
 # COMMAND ----------
 
-# DBTITLE 1,Parametros do pipeline
+# Widgets de configuracao
 from datetime import date
 
-dbutils.widgets.text("data_referencia", "", "Data de Referencia")
-dbutils.widgets.text("train_cutoff", "2024-01-01", "Corte In-Time/OOT (Train < corte)")
+dbutils.widgets.text("data_referencia", "", "Data de Referencia (yyyy-mm-dd)")
+dbutils.widgets.text("train_cutoff",   "2024-01-01", "Train cutoff (yyyy-mm-dd)")
 
-data_referencia = dbutils.widgets.get("data_referencia")
-train_cutoff = dbutils.widgets.get("train_cutoff") or "2024-01-01"
-effective_date = data_referencia if data_referencia else str(date.today())
+data_referencia = dbutils.widgets.get("data_referencia") or str(date.today())
+train_cutoff    = dbutils.widgets.get("train_cutoff") or "2024-01-01"
 
-MARKET_NAME = "me"
-
-spark.sql(
-    f"CREATE OR REPLACE TEMP VIEW config_pipeline AS "
-    f"SELECT CAST('{effective_date}' AS DATE) AS data_referencia, "
-    f"CAST('{train_cutoff}' AS DATE) AS train_cutoff"
-)
-print(f"Data de referencia: {effective_date}")
-print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
+print(f"Data de referencia: {data_referencia}")
+print(f"Train cutoff      : {train_cutoff}  (safras < cutoff = 'Train', >= cutoff = 'YYYY/MM')")
 
 # COMMAND ----------
 
-# DBTITLE 1,Tabela detalhe: monitoring_me_br (CREATE IF NOT EXISTS - historico preservado)
 # MAGIC %sql
-# MAGIC -- Detalhe cliente x safra. Sem DROP: o historico e preservado.
-# MAGIC -- Features/scores sao imutaveis; colunas de target atualizam retroativo.
+# MAGIC -- Tabela 1: detalhe cliente x safra. Sem DROP: historico preservado.
 # MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.monitoring_me_br (
 # MAGIC   id_customer                    INT,
 # MAGIC   customer_name                  STRING,
@@ -154,30 +134,8 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Pre-check: validar tabelas de entrada
 # MAGIC %sql
-# MAGIC SELECT 'abt_inference_me_br' AS tabela, COUNT(*) AS total_linhas,
-# MAGIC   CAST(MIN(reference_month) AS STRING) AS safra_min,
-# MAGIC   CAST(MAX(reference_month) AS STRING) AS safra_max
-# MAGIC FROM ds_catalog_dev.credit_engine.abt_inference_me_br
-# MAGIC UNION ALL
-# MAGIC SELECT 'portfolio_abt_group_me_br', COUNT(*),
-# MAGIC   CAST(MIN(reference_month) AS STRING), CAST(MAX(reference_month) AS STRING)
-# MAGIC FROM ds_catalog_dev.credit_engine.portfolio_abt_group_me_br
-# MAGIC UNION ALL
-# MAGIC SELECT 'apply_model_me_br', COUNT(*),
-# MAGIC   CAST(MIN(reference_month) AS STRING), CAST(MAX(reference_month) AS STRING)
-# MAGIC FROM ds_catalog_dev.credit_engine.apply_model_me_br
-# MAGIC UNION ALL
-# MAGIC SELECT 'targets_me_br', COUNT(*),
-# MAGIC   CAST(MIN(reference_month) AS STRING), CAST(MAX(reference_month) AS STRING)
-# MAGIC FROM ds_catalog_dev.credit_engine.targets_me_br
-
-# COMMAND ----------
-
-# DBTITLE 1,Source view: join apply_model + abt + portfolio + targets
-# MAGIC %sql
-# MAGIC -- apply_model (m) base; abt e portfolio em m-1; targets em m.
+# MAGIC -- View source: apply_model (m) + abt (m-1) + portfolio (m-1) + targets (m)
 # MAGIC CREATE OR REPLACE TEMP VIEW monitoring_source AS
 # MAGIC SELECT
 # MAGIC   am.id_customer, am.customer_name, am.country, am.reference_month,
@@ -218,7 +176,6 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 
 # COMMAND ----------
 
-# DBTITLE 1,MERGE monitoring_me_br: insere novos + atualiza targets
 # MAGIC %sql
 # MAGIC MERGE INTO ds_catalog_dev.credit_engine.monitoring_me_br AS target
 # MAGIC USING monitoring_source AS source
@@ -253,136 +210,228 @@ print(f"Train cutoff (In-Time < corte; OOT >= corte): {train_cutoff}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Sanity check: monitoring_me_br
+# MAGIC %md
+# MAGIC ## DDL das 4 tabelas de métricas
+
+# COMMAND ----------
+
 # MAGIC %sql
-# MAGIC SELECT
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.monitoring_me_br) AS total_linhas,
-# MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.monitoring_me_br) AS total_safras,
-# MAGIC   (SELECT CAST(MAX(reference_month) AS STRING) FROM ds_catalog_dev.credit_engine.monitoring_me_br) AS safra_max,
-# MAGIC   (SELECT COUNT(*) FROM (
-# MAGIC      SELECT reference_month, id_customer, COUNT(*) c
-# MAGIC      FROM ds_catalog_dev.credit_engine.monitoring_me_br GROUP BY reference_month, id_customer HAVING c > 1
-# MAGIC    )) AS duplicatas,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.monitoring_me_br WHERE adjusted_score IS NULL) AS sem_adjusted_score
+# MAGIC -- Tabela 2: metricas agregadas por safra (1 linha por reference_month)
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_metrics_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_metrics_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,
+# MAGIC   total_clients                  INT,
+# MAGIC   pop_baixo                      INT,
+# MAGIC   pop_medio                      INT,
+# MAGIC   pop_alto                       INT,
+# MAGIC   pct_baixo                      DOUBLE,
+# MAGIC   pct_medio                      DOUBLE,
+# MAGIC   pct_alto                       DOUBLE,
+# MAGIC   avg_score                      DOUBLE,
+# MAGIC   median_score                   DOUBLE,
+# MAGIC   avg_credit_limit               DOUBLE,
+# MAGIC   median_credit_limit            DOUBLE,
+# MAGIC   total_credit_limit             DOUBLE,
+# MAGIC   avg_credit_limit_clp           DOUBLE,
+# MAGIC   median_credit_limit_clp        DOUBLE,
+# MAGIC   total_credit_limit_clp         DOUBLE,
+# MAGIC   total_billed_usd               DOUBLE,
+# MAGIC   overdue_usd                    DOUBLE,
+# MAGIC   overdue_pct                    DOUBLE,
+# MAGIC   bad_rate_overall               DOUBLE,
+# MAGIC   bad_rate_baixo                 DOUBLE,
+# MAGIC   bad_rate_medio                 DOUBLE,
+# MAGIC   bad_rate_alto                  DOUBLE,
+# MAGIC   lift_baixo                     DOUBLE,
+# MAGIC   lift_medio                     DOUBLE,
+# MAGIC   lift_alto                      DOUBLE,
+# MAGIC   ks                             DOUBLE,
+# MAGIC   roc_auc                        DOUBLE,
+# MAGIC   gini                           DOUBLE,
+# MAGIC   psi_vs_train                   DOUBLE,
+# MAGIC   psi_vs_train_classification    STRING,
+# MAGIC   psi_rolling                    DOUBLE,
+# MAGIC   psi_rolling_classification     STRING,
+# MAGIC   pct_improved                   DOUBLE,
+# MAGIC   pct_maintained                 DOUBLE,
+# MAGIC   pct_worsened                   DOUBLE,
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Tabela 3: metricas por banda (long format) — substitui 7 tabelas Excel
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_band_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_band_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,           -- 'Train' ou 'YYYY/MM'
+# MAGIC   band                           INT,              -- 1, 2, 3, -1 (missing), 100 (total)
+# MAGIC   band_name                      STRING,           -- '1-BAIXO', '2-MEDIO', '3-ALTO', 'Missing', 'TOTAL'
+# MAGIC   pct_pop                        DOUBLE,           -- = dist_por_decil
+# MAGIC   pct_pop_diff_pp                DOUBLE,           -- = dist_por_decil_diff_pp
+# MAGIC   bad_rate                       DOUBLE,           -- = perc_bad_decil (%)
+# MAGIC   bad_rate_diff_pp               DOUBLE,           -- = perc_bad_decil_diff_pp
+# MAGIC   pct_bad_share                  DOUBLE,           -- = df_dist_bad_decil
+# MAGIC   pct_bad_share_diff_pp          DOUBLE,           -- = df_dist_bad_decil_diff_pp
+# MAGIC   psi_contribution               DOUBLE,           -- = iep_por_decil (contribuicao da banda; band=100 e o total)
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Tabela 4: metricas por feature x bin (long format) — substitui 7 tabelas Excel
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_features_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_features_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,
+# MAGIC   feature_name                   STRING,           -- ex: 'pct_months_overdue_10_20', 'portfolio_score', 'score'
+# MAGIC   grupo                          STRING,           -- 'severidade_atraso', 'peso_historico', 'exposicao', 'benchmark', 'score_individual'
+# MAGIC   coeficiente                    DOUBLE,           -- peso efetivo (media mediana_cluster); NULL se nao aplicavel
+# MAGIC   bin_label                      STRING,           -- ex: '(-inf, 0.5]', '(0.5, inf]', 'Missing'
+# MAGIC   pct_pop                        DOUBLE,           -- = dist_vars
+# MAGIC   pct_pop_diff_pp                DOUBLE,           -- = dist_vars_diff_pp
+# MAGIC   volume                         DOUBLE,           -- = vol_vars (contagem absoluta)
+# MAGIC   lift                           DOUBLE,           -- = risco_relativo (bad_rate_bin / bad_rate_geral)
+# MAGIC   lift_trigger                   STRING,           -- = risco_relativo_trigger ('true' se fora [0.5, 2.0])
+# MAGIC   psi_feature                    DOUBLE,           -- = iep (PSI da feature inteira; repetido em cada bin)
+# MAGIC   psi_within_group               DOUBLE,           -- = iep_vars (PSI da feature dentro do grupo)
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Tabela 5: matriz de migracao mes-1 -> mes (long format) — substitui decile_migrations
+# MAGIC DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br;
+# MAGIC CREATE TABLE ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br (
+# MAGIC   reference_month                DATE,
+# MAGIC   period                         STRING,
+# MAGIC   previous_band                  INT,              -- -1 = novo cliente (nao havia banda no mes anterior)
+# MAGIC   current_band                   INT,
+# MAGIC   count                          INT,
+# MAGIC   pct_of_pop                     DOUBLE,
+# MAGIC   market_name                    STRING,
+# MAGIC   metric_key                     STRING,
+# MAGIC   updated_at                     TIMESTAMP
+# MAGIC )
+# MAGIC USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Tabelas de monitoramento (estrutura Excel) — historico preservado
-# MAGIC
-# MAGIC Todas as 16 tabelas seguem o esquema tidy do Excel. `period` = `'Train'`
-# MAGIC (base In-Time, `reference_month < train_cutoff`) ou `'YYYY/MM'` (cada
-# MAGIC safra OOT). Baseline de PSI/diff = distribuicao do `'Train'`.
+# MAGIC ## Cálculo unificado das 4 tabelas de métricas
 
 # COMMAND ----------
 
-# DBTITLE 1,DDL: criar as 16 tabelas de monitoramento (IF NOT EXISTS)
-spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.performance_me_br (
-  performance STRING, period STRING, value DOUBLE, market_name STRING,
-  metric_key STRING, reference_year INT, reference_month INT, updated_at TIMESTAMP
-) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-""")
-
-# Tabelas por banda (decil = banda 1/2/3)
-for tname in [
-    "dist_por_decil_me_br", "dist_por_decil_diff_pp_me_br",
-    "perc_bad_decil_me_br", "perc_bad_decil_diff_pp_me_br",
-    "df_dist_bad_decil_me_br", "df_dist_bad_decil_diff_pp_me_br",
-    "iep_por_decil_me_br",
-]:
-    spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.{tname} (
-      decil INT, period STRING, value DOUBLE, market_name STRING,
-      metric_key STRING, reference_year INT, reference_month INT, updated_at TIMESTAMP
-    ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-    """)
-
-spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.decile_migrations_me_br (
-  previous_decile INT, current_decile INT, count INT, period STRING,
-  market_name STRING, metric_key STRING, reference_year INT,
-  reference_month INT, updated_at TIMESTAMP, update_at TIMESTAMP
-) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-""")
-
-spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.iep_me_br (
-  variaveis STRING, period STRING, value DOUBLE, market_name STRING,
-  metric_key STRING, reference_year INT, reference_month INT, updated_at TIMESTAMP
-) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-""")
-
-# Tabelas por variavel + grupo (sem coeficiente), value DOUBLE
-for tname in ["iep_vars_me_br", "risco_relativo_me_br"]:
-    spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.{tname} (
-      variaveis STRING, grupo STRING, period STRING, value DOUBLE,
-      market_name STRING, metric_key STRING, reference_year INT,
-      reference_month INT, updated_at TIMESTAMP
-    ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-    """)
-
-# risco_relativo_trigger: value e STRING ('true'/'false'), igual ao padrao Excel
-spark.sql("""
-CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.risco_relativo_trigger_me_br (
-  variaveis STRING, grupo STRING, period STRING, value STRING,
-  market_name STRING, metric_key STRING, reference_year INT,
-  reference_month INT, updated_at TIMESTAMP
-) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-""")
-
-# Tabelas por variavel + grupo + coeficiente
-for tname in ["dist_vars_me_br", "dist_vars_diff_pp_me_br", "vol_vars_me_br"]:
-    spark.sql(f"""
-    CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.{tname} (
-      variaveis STRING, grupo STRING, coeficientes DOUBLE, period STRING,
-      value DOUBLE, market_name STRING, metric_key STRING,
-      reference_year INT, reference_month INT, updated_at TIMESTAMP
-    ) USING DELTA TBLPROPERTIES ('delta.autoOptimize.optimizeWrite'='true')
-    """)
-
-print("16 tabelas de monitoramento garantidas (IF NOT EXISTS).")
-
-# COMMAND ----------
-
-# DBTITLE 1,Carga e configuracao
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from sklearn.metrics import roc_auc_score
 from scipy.stats import ks_2samp
-from pyspark.sql import functions as F
+from pyspark.sql.types import (
+    StructType, StructField, DateType, IntegerType,
+    DoubleType, StringType, TimestampType
+)
 
-# ---- Configuracao (alinhada com bivariate_analysis_me_br) ----
-SCORE_COL = "integrated_score"
-BAND_COL = "integrated_score_band"
-TARGET_COL = "target_percent7mob1"
-BAND_MAP = {"1-BAIXO": 1, "2-MEDIO": 2, "3-ALTO": 3}
+# ============================================================
+# Configuracao
+# ============================================================
+TARGET_COL  = 'target_percent7mob1'
+SCORE_COL   = 'integrated_score'
+BAND_COL    = 'integrated_score_band'
+BAND_MAP    = {'1-BAIXO': 1, '2-MEDIO': 2, '3-ALTO': 3}
+BAND_NAMES  = {1: '1-BAIXO', 2: '2-MEDIO', 3: '3-ALTO', -1: 'Missing', 100: 'TOTAL'}
+MARKET      = 'me'
+TRAIN_CUTOFF = pd.Timestamp(train_cutoff)
 
-# Features que compoem a formula ponderada (equivalente aos "dummies").
-# grupo: agrupamento de negocio. coef: peso efetivo no score quando aplicavel.
+# Features e seus grupos / coeficientes efetivos
 FEATURES = [
-    ("pct_months_overdue_10_20", "severidade_atraso"),
-    ("pct_months_overdue_20_30", "severidade_atraso"),
-    ("pct_months_overdue_30_50", "severidade_atraso"),
-    ("pct_months_overdue_50_plus", "severidade_atraso"),
-    ("overdue_pct",              "severidade_atraso"),
-    ("months_with_billing",      "peso_historico"),
-    ("months_defaulted",         "peso_historico"),
-    ("historical_weight",        "peso_historico"),
-    ("reference_value",          "exposicao"),
-    ("payment_term",             "exposicao"),
-    ("portfolio_score",          "benchmark"),
-    ("score",                    "score_individual"),
+    ('pct_months_overdue_10_20',   'severidade_atraso', 'median_cluster_10'),
+    ('pct_months_overdue_20_30',   'severidade_atraso', 'median_cluster_20'),
+    ('pct_months_overdue_30_50',   'severidade_atraso', 'median_cluster_30'),
+    ('pct_months_overdue_50_plus', 'severidade_atraso', 'median_cluster_50'),
+    ('overdue_pct',                'severidade_atraso', None),
+    ('months_with_billing',        'peso_historico',    None),
+    ('months_defaulted',           'peso_historico',    None),
+    ('historical_weight',          'peso_historico',    None),
+    ('reference_value',            'exposicao',         None),
+    ('payment_term',               'exposicao',         None),
+    ('portfolio_score',            'benchmark',         None),
+    ('score',                      'score_individual',  None),
 ]
 
-cutoff = spark.sql("SELECT train_cutoff FROM config_pipeline").collect()[0][0]
-TRAIN_CUTOFF = pd.Timestamp(cutoff)
+# ============================================================
+# Funcoes auxiliares
+# ============================================================
+def calc_psi(base_dist, current_dist, epsilon=1e-4):
+    keys = set(base_dist) | set(current_dist)
+    total = 0.0
+    for k in keys:
+        b = base_dist.get(k, 0.0) + epsilon
+        c = current_dist.get(k, 0.0) + epsilon
+        total += (c - b) * np.log(c / b)
+    return float(total)
 
-pdf = spark.sql(f"""
-    SELECT id_customer, reference_month, {SCORE_COL}, {BAND_COL},
-           {TARGET_COL}, total_amount, overdue_amount,
+def psi_contribution(base_share, curr_share, epsilon=1e-4):
+    b = base_share + epsilon
+    c = curr_share + epsilon
+    return float((c - b) * np.log(c / b))
+
+def classify_psi(val):
+    if val is None: return None
+    if val < 0.10:  return 'Estavel'
+    if val < 0.25:  return 'Moderado'
+    return 'Significativo'
+
+def safe_round(val, decimals=6):
+    if val is None: return None
+    if isinstance(val, float) and np.isnan(val): return None
+    return round(float(val), decimals)
+
+def fit_quantile_bins(series, n_bins=5):
+    s = pd.to_numeric(series, errors='coerce').dropna()
+    if s.nunique() <= 6:
+        return None  # tratar como discreto
+    edges = np.unique(np.quantile(s, np.linspace(0, 1, n_bins + 1)))
+    edges[0], edges[-1] = -np.inf, np.inf
+    return list(edges)
+
+def apply_bins(series, edges):
+    s = pd.to_numeric(series, errors='coerce')
+    if edges is None:
+        return series.where(series.notna(), 'Missing').astype(str)
+    labels = pd.cut(s, bins=edges, include_lowest=True, duplicates='drop').astype(str)
+    labels = pd.Series(labels, index=series.index)
+    labels[s.isna()] = 'Missing'
+    return labels
+
+def norm_vc(series):
+    vc = series.value_counts(normalize=True)
+    return {str(k): float(v) for k, v in vc.items()}
+
+def safe_sum(series):
+    non_null = series.dropna()
+    return float(non_null.sum()) if len(non_null) > 0 else None
+
+# ============================================================
+# Carga
+# ============================================================
+df = spark.sql("""
+    SELECT id_customer, reference_month, integrated_score, integrated_score_band,
+           total_amount, overdue_amount, credit_limit_end, credit_limit_end_clp,
+           target_percent7mob1,
            pct_months_overdue_10_20, pct_months_overdue_20_30,
            pct_months_overdue_30_50, pct_months_overdue_50_plus,
            overdue_pct, months_with_billing, months_defaulted,
@@ -391,664 +440,546 @@ pdf = spark.sql(f"""
            median_cluster_10, median_cluster_20,
            median_cluster_30, median_cluster_50
     FROM ds_catalog_dev.credit_engine.monitoring_me_br
-    WHERE {SCORE_COL} IS NOT NULL
+    WHERE integrated_score IS NOT NULL
 """).toPandas()
 
-pdf["reference_month"] = pd.to_datetime(pdf["reference_month"])
-pdf["band_num"] = pdf[BAND_COL].map(BAND_MAP).fillna(-1).astype(int)
-pdf["period"] = np.where(
-    pdf["reference_month"] < TRAIN_CUTOFF,
-    "Train",
-    pdf["reference_month"].dt.strftime("%Y/%m"),
+df['reference_month'] = pd.to_datetime(df['reference_month'])
+df = df.sort_values('reference_month').reset_index(drop=True)
+df['band'] = df[BAND_COL].map(BAND_MAP).fillna(-1).astype(int)
+df['period'] = np.where(
+    df['reference_month'] < TRAIN_CUTOFF,
+    'Train',
+    df['reference_month'].dt.strftime('%Y/%m')
 )
 
-# Coeficiente efetivo: media da mediana do cluster correspondente (peso real
-# da faixa no score = Σ(pct×mediana)/10000). Para as demais features, NULL.
-COEF_MAP = {
-    "pct_months_overdue_10_20": float(pdf["median_cluster_10"].mean()) if pdf["median_cluster_10"].notna().any() else None,
-    "pct_months_overdue_20_30": float(pdf["median_cluster_20"].mean()) if pdf["median_cluster_20"].notna().any() else None,
-    "pct_months_overdue_30_50": float(pdf["median_cluster_30"].mean()) if pdf["median_cluster_30"].notna().any() else None,
-    "pct_months_overdue_50_plus": float(pdf["median_cluster_50"].mean()) if pdf["median_cluster_50"].notna().any() else None,
-}
+train_df = df[df['period'] == 'Train']
+periods  = ['Train'] + sorted(df.loc[df['period'] != 'Train', 'period'].unique().tolist())
 
-train_pdf = pdf[pdf["period"] == "Train"].copy()
-periods = ["Train"] + sorted([p for p in pdf["period"].unique() if p != "Train"])
-NOW = datetime.now()
+if len(train_df) == 0:
+    raise ValueError(f"Sem dados em 'Train' (reference_month < {TRAIN_CUTOFF.date()}). Ajuste o widget train_cutoff.")
 
-print(f"Registros: {len(pdf):,} | Train: {len(train_pdf):,} | Periodos OOT: {len(periods)-1}")
-if len(train_pdf) == 0:
-    raise ValueError(
-        f"Sem dados Train (reference_month < {TRAIN_CUTOFF.date()}). "
-        f"Ajuste o widget train_cutoff."
-    )
-print(f"Range: {pdf['reference_month'].min().date()} a {pdf['reference_month'].max().date()}")
+print(f"Registros : {len(df):,}")
+print(f"Periodos  : Train ({len(train_df):,} linhas) + {len(periods)-1} safras OOT")
+print(f"Range     : {df['reference_month'].min().date()} a {df['reference_month'].max().date()}")
 
-# COMMAND ----------
-
-# DBTITLE 1,Funcoes auxiliares (binning, PSI, lift)
-def fit_bins(series, max_bins=5):
-    """Cortes por quantil aprendidos no Train. Categoricos/poucos valores
-    viram bins discretos. Retorna lista de edges ou None p/ categorico."""
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.nunique() <= 6:
-        return None  # tratar como categorico
-    qs = np.unique(np.quantile(s, np.linspace(0, 1, max_bins + 1)))
-    qs[0], qs[-1] = -np.inf, np.inf
-    return list(qs)
-
-
-def apply_bins(series, edges):
-    """Aplica edges; NaN -> 'Missing'. Categorico -> valor como string."""
-    s = pd.to_numeric(series, errors="coerce")
-    if edges is None:
-        out = series.where(series.notna(), "Missing").astype(str)
-        return out
-    lbl = pd.cut(s, bins=edges, include_lowest=True, duplicates="drop").astype(str)
-    lbl = pd.Series(lbl, index=series.index)
-    lbl[s.isna()] = "Missing"
-    return lbl
-
-
-def psi(base_counts, cur_counts, eps=1e-4):
-    """PSI entre duas distribuicoes (dict label->share)."""
-    keys = set(base_counts) | set(cur_counts)
-    val = 0.0
-    for k in keys:
-        b = base_counts.get(k, 0.0) + eps
-        c = cur_counts.get(k, 0.0) + eps
-        val += (c - b) * np.log(c / b)
-    return round(float(val), 6)
-
-
-def norm_counts(s):
-    vc = s.value_counts(normalize=True)
-    return {str(k): float(v) for k, v in vc.items()}
-
-
-# Cortes aprendidos no Train (mesmos cortes em todos os periodos)
-BIN_EDGES = {f: fit_bins(train_pdf[f]) for f, _ in FEATURES}
-TRAIN_FEAT_DIST = {}
-for f, _ in FEATURES:
-    TRAIN_FEAT_DIST[f] = norm_counts(apply_bins(train_pdf[f], BIN_EDGES[f]))
-
-TRAIN_BAND_DIST = norm_counts(train_pdf["band_num"].astype(str))
-
-# Bad rate baseline (Train) por banda e geral
-_t = train_pdf[train_pdf[TARGET_COL].notna()]
-TRAIN_BAD_OVERALL = float(_t[TARGET_COL].mean()) if len(_t) else None
-TRAIN_BAD_BY_BAND = (
-    _t.groupby("band_num")[TARGET_COL].mean().to_dict() if len(_t) else {}
-)
-
-# COMMAND ----------
-
-# DBTITLE 1,Calcular metricas por periodo
-rows = {k: [] for k in [
-    "performance", "dist_por_decil", "dist_por_decil_diff_pp",
-    "perc_bad_decil", "perc_bad_decil_diff_pp",
-    "df_dist_bad_decil", "df_dist_bad_decil_diff_pp",
-    "decile_migrations", "iep_por_decil", "iep", "iep_vars",
-    "dist_vars", "dist_vars_diff_pp", "vol_vars",
-    "risco_relativo", "risco_relativo_trigger",
-]}
-
-
-def ry_rm(period, sub):
-    """reference_year / reference_month. Train herda a ultima safra In-Time."""
-    if period == "Train":
-        m = sub["reference_month"].max()
+# ============================================================
+# Coeficientes efetivos (media mediana_cluster_X)
+# ============================================================
+COEF_MAP = {}
+for fname, _, coef_col in FEATURES:
+    if coef_col and coef_col in df.columns:
+        m = df[coef_col].mean()
+        COEF_MAP[fname] = float(m) if not pd.isna(m) else None
     else:
-        m = pd.Timestamp(period.replace("/", "-") + "-01")
-    return int(m.year), int(m.month)
+        COEF_MAP[fname] = None
 
+# ============================================================
+# Baselines do Train
+# ============================================================
+TRAIN_BAND_DIST  = norm_vc(train_df['band'].astype(str))
+train_t          = train_df[train_df[TARGET_COL].notna()]
+TRAIN_BAD_OVERALL = float(train_t[TARGET_COL].mean()) if len(train_t) else None
+TRAIN_BAD_BY_BAND = train_t.groupby('band')[TARGET_COL].mean().to_dict() if len(train_t) else {}
 
-# Baseline de bad rate por banda no Train (% de bads concentrado por banda)
 def bad_share_by_band(sub):
     st = sub[sub[TARGET_COL].notna()]
-    tot_bad = st[TARGET_COL].sum()
-    if tot_bad == 0:
-        return {}
-    return (st.groupby("band_num")[TARGET_COL].sum() / tot_bad).to_dict()
+    tot = st[TARGET_COL].sum()
+    if tot == 0: return {}
+    return (st.groupby('band')[TARGET_COL].sum() / tot).to_dict()
 
+TRAIN_BADSHARE   = bad_share_by_band(train_df)
+BIN_EDGES        = {f: fit_quantile_bins(train_df[f]) for f, _, _ in FEATURES}
+TRAIN_FEAT_DIST  = {f: norm_vc(apply_bins(train_df[f], BIN_EDGES[f])) for f, _, _ in FEATURES}
 
-TRAIN_BADSHARE = bad_share_by_band(train_pdf)
-
+# ============================================================
+# Iteracao por periodo e coleta
+# ============================================================
+metrics_rows   = []
+band_rows      = []
+feature_rows   = []
+migration_rows = []
+NOW = datetime.now()
 prev_sub = None
-for period in periods:
-    sub = pdf[pdf["period"] == period].copy()
+
+for i, period in enumerate(periods):
+    sub = df[df['period'] == period].copy()
     if len(sub) == 0:
         continue
-    ry, rm = ry_rm(period, sub)
+    ref_m = sub['reference_month'].max()
     sub_t = sub[sub[TARGET_COL].notna()].copy()
+    total = len(sub)
 
-    # ---------- performance: ROC, KS, Gini ----------
-    if len(sub_t) and sub_t[TARGET_COL].nunique() == 2:
-        y = sub_t[TARGET_COL].astype(int).values
-        sc = sub_t[SCORE_COL].astype(float).values
-        auc = roc_auc_score(y, sc)
-        ks = ks_2samp(sc[y == 0], sc[y == 1]).statistic
-        for pm, pv in [("ROC", auc), ("KS", ks), ("Gini", 2 * auc - 1)]:
-            rows["performance"].append(
-                (pm, period, round(float(pv), 6), MARKET_NAME,
-                 "performance", ry, rm, NOW)
-            )
+    # ===== Band distributions for this period =====
+    band_dist = norm_vc(sub['band'].astype(str))
+    bs        = bad_share_by_band(sub)
+    is_train  = (period == 'Train')
 
-    # ---------- distribuicao por banda + diff pp + PSI ----------
-    band_dist = norm_counts(sub["band_num"].astype(str))
-    for b in sorted(set(list(band_dist) + list(TRAIN_BAND_DIST))):
-        bi = int(float(b))
-        v = band_dist.get(b, 0.0) * 100
-        rows["dist_por_decil"].append(
-            (bi, period, round(v, 6), MARKET_NAME, "dist_por_decil", ry, rm, NOW))
-        diff = v - TRAIN_BAND_DIST.get(b, 0.0) * 100
-        rows["dist_por_decil_diff_pp"].append(
-            (bi, period, round(diff, 6), MARKET_NAME,
-             "dist_por_decil_diff_pp", ry, rm, NOW))
-    # Per-band PSI contribution + total (decil=100), mirroring estrutura Excel.
-    _eps = 1e-4
-    _keys_all = sorted(set(TRAIN_BAND_DIST) | set(band_dist))
-    _total_psi = 0.0
-    for _k in _keys_all:
-        _bi = int(float(_k))
-        _t_share = TRAIN_BAND_DIST.get(_k, 0.0) + _eps
-        _c_share = band_dist.get(_k, 0.0) + _eps
-        _contrib = (_c_share - _t_share) * np.log(_c_share / _t_share)
-        _total_psi += _contrib
-        rows["iep_por_decil"].append(
-            (_bi, period, round(float(_contrib), 6), MARKET_NAME,
-             "iep_por_decil", ry, rm, NOW))
-    rows["iep_por_decil"].append(
-        (100, period, round(float(_total_psi), 6), MARKET_NAME,
-         "iep_por_decil", ry, rm, NOW))
+    # ============================================================
+    # monitoring_metrics_me_br (1 linha por periodo)
+    # ============================================================
+    pop_baixo = int((sub['band'] == 1).sum())
+    pop_medio = int((sub['band'] == 2).sum())
+    pop_alto  = int((sub['band'] == 3).sum())
+    pct_baixo = safe_round(pop_baixo / total * 100, 4) if total > 0 else None
+    pct_medio = safe_round(pop_medio / total * 100, 4) if total > 0 else None
+    pct_alto  = safe_round(pop_alto  / total * 100, 4) if total > 0 else None
 
-    # ---------- bad rate por banda + diff pp ----------
-    if len(sub_t):
-        br = sub_t.groupby("band_num")[TARGET_COL].mean().to_dict()
-        for bi, val in br.items():
-            rows["perc_bad_decil"].append(
-                (int(bi), period, round(float(val) * 100, 6), MARKET_NAME,
-                 "perc_bad_decil", ry, rm, NOW))
-            dpp = (float(val) - TRAIN_BAD_BY_BAND.get(bi, 0.0)) * 100
-            rows["perc_bad_decil_diff_pp"].append(
-                (int(bi), period, round(dpp, 6), MARKET_NAME,
-                 "perc_bad_decil_diff_pp", ry, rm, NOW))
-        # ---------- % dos bads concentrado por banda + diff ----------
-        bs = bad_share_by_band(sub)
-        for bi, val in bs.items():
-            rows["df_dist_bad_decil"].append(
-                (int(bi), period, round(float(val) * 100, 6), MARKET_NAME,
-                 "df_dist_bad_decil", ry, rm, NOW))
-            dpp = (float(val) - TRAIN_BADSHARE.get(bi, 0.0)) * 100
-            rows["df_dist_bad_decil_diff_pp"].append(
-                (int(bi), period, round(dpp, 6), MARKET_NAME,
-                 "df_dist_bad_decil_diff_pp", ry, rm, NOW))
+    avg_score    = safe_round(sub[SCORE_COL].mean())
+    median_score = safe_round(sub[SCORE_COL].median())
 
-    # ---------- migracao de banda (periodo anterior -> atual) ----------
+    avg_cl    = safe_round(sub['credit_limit_end'].mean(), 2)
+    med_cl    = safe_round(sub['credit_limit_end'].median(), 2)
+    tot_cl    = safe_round(safe_sum(sub['credit_limit_end']), 2)
+    avg_clp   = safe_round(sub['credit_limit_end_clp'].mean(), 2)
+    med_clp   = safe_round(sub['credit_limit_end_clp'].median(), 2)
+    tot_clp   = safe_round(safe_sum(sub['credit_limit_end_clp']), 2)
+
+    tot_billed  = safe_round(safe_sum(sub['total_amount']), 2)
+    tot_overdue = safe_round(safe_sum(sub['overdue_amount']), 2)
+    overdue_pct_period = safe_round(tot_overdue / tot_billed * 100, 4) if (tot_billed is not None and tot_billed > 0) else None
+
+    bad_rate_overall = bad_rate_baixo = bad_rate_medio = bad_rate_alto = None
+    lift_baixo = lift_medio = lift_alto = None
+    ks_val = roc_val = gini_val = None
+    if len(sub_t) > 0:
+        sub_t[TARGET_COL] = sub_t[TARGET_COL].astype(int)
+        y = sub_t[TARGET_COL].values
+        s = sub_t[SCORE_COL].values
+        bad_rate_overall = safe_round(float(y.mean()) * 100)   # stored as % (0-100)
+        for b, attr in [(1, 'bad_rate_baixo'), (2, 'bad_rate_medio'), (3, 'bad_rate_alto')]:
+            mask = sub_t['band'] == b
+            if mask.any():
+                v = float(sub_t.loc[mask, TARGET_COL].mean()) * 100   # %
+                if attr == 'bad_rate_baixo': bad_rate_baixo = safe_round(v)
+                elif attr == 'bad_rate_medio': bad_rate_medio = safe_round(v)
+                elif attr == 'bad_rate_alto':  bad_rate_alto  = safe_round(v)
+        if bad_rate_overall and bad_rate_overall > 0:
+            if bad_rate_baixo is not None: lift_baixo = safe_round(bad_rate_baixo / bad_rate_overall, 4)
+            if bad_rate_medio is not None: lift_medio = safe_round(bad_rate_medio / bad_rate_overall, 4)
+            if bad_rate_alto  is not None: lift_alto  = safe_round(bad_rate_alto  / bad_rate_overall, 4)
+        if y.sum() > 0 and y.sum() < len(y):
+            good = s[y == 0]
+            bad  = s[y == 1]
+            ks_stat, _ = ks_2samp(good, bad)
+            ks_val = safe_round(float(ks_stat))
+            auc_val = roc_auc_score(y, s)
+            roc_val = safe_round(float(auc_val))
+            gini_val = safe_round(float(2 * auc_val - 1))
+
+    psi_train = calc_psi(TRAIN_BAND_DIST, band_dist) if not is_train else 0.0
+    psi_rolling = None
     if prev_sub is not None:
-        m = prev_sub[["id_customer", "band_num"]].rename(
-            columns={"band_num": "prev"}
-        ).merge(
-            sub[["id_customer", "band_num"]].rename(columns={"band_num": "cur"}),
-            on="id_customer", how="right",
+        prev_band_dist = norm_vc(prev_sub['band'].astype(str))
+        psi_rolling = calc_psi(prev_band_dist, band_dist)
+
+    pct_improved = pct_maintained = pct_worsened = None
+    if prev_sub is not None and len(prev_sub) > 0:
+        merged = prev_sub[['id_customer', 'band']].rename(columns={'band': 'prev'}).merge(
+            sub[['id_customer', 'band']].rename(columns={'band': 'curr'}),
+            on='id_customer', how='inner'
         )
-        m["prev"] = m["prev"].fillna(-1).astype(int)
-        g = m.groupby(["prev", "cur"]).size().reset_index(name="n")
-        for _, r in g.iterrows():
-            rows["decile_migrations"].append(
-                (int(r["prev"]), int(r["cur"]), int(r["n"]), period,
-                 MARKET_NAME, "decile_migrations", ry, rm, NOW, NOW))
+        if len(merged) > 0:
+            direction = merged['curr'] - merged['prev']
+            pct_improved   = safe_round((direction < 0).mean() * 100, 4)
+            pct_maintained = safe_round((direction == 0).mean() * 100, 4)
+            pct_worsened   = safe_round((direction > 0).mean() * 100, 4)
 
-    # ---------- features: dist, vol, PSI, risco relativo ----------
-    for f, grupo in FEATURES:
-        coef = COEF_MAP.get(f)
-        binned = apply_bins(sub[f], BIN_EDGES[f])
-        dist = norm_counts(binned)
-        vol = binned.value_counts().to_dict()
+    metrics_rows.append({
+        'reference_month': ref_m, 'period': period,
+        'total_clients': total,
+        'pop_baixo': pop_baixo, 'pop_medio': pop_medio, 'pop_alto': pop_alto,
+        'pct_baixo': pct_baixo, 'pct_medio': pct_medio, 'pct_alto': pct_alto,
+        'avg_score': avg_score, 'median_score': median_score,
+        'avg_credit_limit': avg_cl, 'median_credit_limit': med_cl, 'total_credit_limit': tot_cl,
+        'avg_credit_limit_clp': avg_clp, 'median_credit_limit_clp': med_clp, 'total_credit_limit_clp': tot_clp,
+        'total_billed_usd': tot_billed, 'overdue_usd': tot_overdue, 'overdue_pct': overdue_pct_period,
+        'bad_rate_overall': bad_rate_overall,
+        'bad_rate_baixo': bad_rate_baixo, 'bad_rate_medio': bad_rate_medio, 'bad_rate_alto': bad_rate_alto,
+        'lift_baixo': lift_baixo, 'lift_medio': lift_medio, 'lift_alto': lift_alto,
+        'ks': ks_val, 'roc_auc': roc_val, 'gini': gini_val,
+        'psi_vs_train': safe_round(psi_train), 'psi_vs_train_classification': classify_psi(psi_train),
+        'psi_rolling': safe_round(psi_rolling), 'psi_rolling_classification': classify_psi(psi_rolling),
+        'pct_improved': pct_improved, 'pct_maintained': pct_maintained, 'pct_worsened': pct_worsened,
+        'market_name': MARKET, 'metric_key': 'monitoring_metrics', 'updated_at': NOW,
+    })
 
-        # PSI da feature (iep / iep_vars)
-        p = psi(TRAIN_FEAT_DIST[f], dist)
-        rows["iep"].append(
-            (f, period, p, MARKET_NAME, "iep", ry, rm, NOW))
-        rows["iep_vars"].append(
-            (f, grupo, period, p, MARKET_NAME, "iep_vars", ry, rm, NOW))
+    # ============================================================
+    # monitoring_band_me_br (1 linha por banda + 1 total)
+    # ============================================================
+    psi_total = 0.0
+    for b_str in sorted(set(list(TRAIN_BAND_DIST) + list(band_dist))):
+        b_int = int(float(b_str))
+        pct_pop = band_dist.get(b_str, 0.0) * 100
+        pct_pop_train = TRAIN_BAND_DIST.get(b_str, 0.0) * 100
+        pct_pop_diff = (pct_pop - pct_pop_train) if not is_train else 0.0
 
-        for lbl in sorted(set(list(dist) + list(TRAIN_FEAT_DIST[f]))):
-            share = dist.get(lbl, 0.0) * 100
-            rows["dist_vars"].append(
-                (f"{f}={lbl}", grupo, coef, period, round(share, 6),
-                 MARKET_NAME, "dist_vars", ry, rm, NOW))
-            dpp = share - TRAIN_FEAT_DIST[f].get(lbl, 0.0) * 100
-            rows["dist_vars_diff_pp"].append(
-                (f"{f}={lbl}", grupo, coef, period, round(dpp, 6),
-                 MARKET_NAME, "dist_vars_diff_pp", ry, rm, NOW))
-            rows["vol_vars"].append(
-                (f"{f}={lbl}", grupo, coef, period,
-                 float(vol.get(lbl, 0)), MARKET_NAME, "vol_vars", ry, rm, NOW))
+        br = None
+        if len(sub_t) > 0:
+            mask = sub_t['band'] == b_int
+            if mask.any():
+                br = float(sub_t.loc[mask, TARGET_COL].mean()) * 100
+        br_train = TRAIN_BAD_BY_BAND.get(b_int)
+        br_train_pct = br_train * 100 if br_train is not None else None
+        br_diff = (br - br_train_pct) if (br is not None and br_train_pct is not None and not is_train) else (0.0 if is_train else None)
 
-        # Risco relativo (lift) = bad_rate(faixa) / bad_rate(geral)
-        if len(sub_t) and TRAIN_BAD_OVERALL and TRAIN_BAD_OVERALL > 0:
-            bf = apply_bins(sub_t[f], BIN_EDGES[f])
-            base = sub_t[TARGET_COL].mean()
-            if base and base > 0:
-                grp = sub_t.assign(_b=bf).groupby("_b")[TARGET_COL].mean()
-                for lbl, brate in grp.items():
-                    rr = float(brate) / float(base)
-                    rows["risco_relativo"].append(
-                        (f"{f}={lbl}", grupo, period, round(rr, 6),
-                         MARKET_NAME, "risco_relativo", ry, rm, NOW))
-                    # trigger: lift fora de [0.5, 2.0] sinaliza instabilidade
-                    trig = "true" if (rr < 0.5 or rr > 2.0) else "false"
-                    rows["risco_relativo_trigger"].append(
-                        (f"{f}={lbl}", grupo, period, trig,
-                         MARKET_NAME, "risco_relativo_trigger", ry, rm, NOW))
+        pbs = bs.get(b_int, 0.0) * 100 if bs else None
+        pbs_train = TRAIN_BADSHARE.get(b_int, 0.0) * 100 if TRAIN_BADSHARE else None
+        pbs_diff = (pbs - pbs_train) if (pbs is not None and pbs_train is not None and not is_train) else (0.0 if is_train else None)
+
+        psi_c = psi_contribution(TRAIN_BAND_DIST.get(b_str, 0.0), band_dist.get(b_str, 0.0)) if not is_train else 0.0
+        psi_total += psi_c
+
+        band_rows.append({
+            'reference_month': ref_m, 'period': period,
+            'band': b_int, 'band_name': BAND_NAMES.get(b_int, str(b_int)),
+            'pct_pop': safe_round(pct_pop),
+            'pct_pop_diff_pp': safe_round(pct_pop_diff),
+            'bad_rate': safe_round(br),
+            'bad_rate_diff_pp': safe_round(br_diff),
+            'pct_bad_share': safe_round(pbs),
+            'pct_bad_share_diff_pp': safe_round(pbs_diff),
+            'psi_contribution': safe_round(psi_c),
+            'market_name': MARKET, 'metric_key': 'monitoring_band', 'updated_at': NOW,
+        })
+
+    # Linha total (band = 100)
+    train_bad_pct = TRAIN_BAD_OVERALL * 100 if TRAIN_BAD_OVERALL is not None else None
+    total_br_diff = (bad_rate_overall - train_bad_pct) if (bad_rate_overall is not None and train_bad_pct is not None and not is_train) else (0.0 if is_train else None)
+    band_rows.append({
+        'reference_month': ref_m, 'period': period,
+        'band': 100, 'band_name': 'TOTAL',
+        'pct_pop': 100.0, 'pct_pop_diff_pp': 0.0,
+        'bad_rate': bad_rate_overall,  # already in % (0-100)
+        'bad_rate_diff_pp': safe_round(total_br_diff),
+        'pct_bad_share': 100.0, 'pct_bad_share_diff_pp': 0.0,
+        'psi_contribution': safe_round(psi_total),
+        'market_name': MARKET, 'metric_key': 'monitoring_band', 'updated_at': NOW,
+    })
+
+    # ============================================================
+    # monitoring_features_me_br (1 linha por feature x bin)
+    # ============================================================
+    # Bad rate overall do periodo (denominador do lift)
+    period_bad_overall = float(sub_t[TARGET_COL].mean()) if len(sub_t) > 0 else None
+
+    # PSI por feature (versus Train baseline)
+    psi_per_feature = {}
+    for fname, _, _ in FEATURES:
+        dist_now = norm_vc(apply_bins(sub[fname], BIN_EDGES[fname]))
+        psi_per_feature[fname] = calc_psi(TRAIN_FEAT_DIST[fname], dist_now) if not is_train else 0.0
+
+    # psi_within_group = fracao do PSI do grupo que esta feature explica
+    psi_group_sums = {}
+    for g in set(grupo for _, grupo, _ in FEATURES):
+        feats_in_group = [f for f, gg, _ in FEATURES if gg == g]
+        psi_group_sums[g] = float(sum(psi_per_feature[f] for f in feats_in_group))
+
+    for fname, grupo, _ in FEATURES:
+        coef = COEF_MAP.get(fname)
+        bins_now = apply_bins(sub[fname], BIN_EDGES[fname])
+        dist_now = norm_vc(bins_now)
+        vol_now  = bins_now.value_counts().to_dict()
+        train_dist = TRAIN_FEAT_DIST[fname]
+
+        # Lift por bin
+        bin_bad_rates = {}
+        if period_bad_overall and period_bad_overall > 0 and len(sub_t) > 0:
+            sub_t_bins = apply_bins(sub_t[fname], BIN_EDGES[fname])
+            bin_bad_rates = sub_t.assign(_bin=sub_t_bins).groupby('_bin')[TARGET_COL].mean().to_dict()
+
+        all_bins = sorted(set(list(dist_now) + list(train_dist)))
+        for bin_lbl in all_bins:
+            pct_pop = dist_now.get(bin_lbl, 0.0) * 100
+            pct_pop_train = train_dist.get(bin_lbl, 0.0) * 100
+            pct_pop_diff = (pct_pop - pct_pop_train) if not is_train else 0.0
+            volume = float(vol_now.get(bin_lbl, 0))
+
+            br = bin_bad_rates.get(bin_lbl)
+            if br is not None and period_bad_overall and period_bad_overall > 0:
+                lift_val = float(br) / float(period_bad_overall)
+                lift_trigger = 'true' if (lift_val < 0.5 or lift_val > 2.0) else 'false'
+            else:
+                lift_val = None
+                lift_trigger = None
+
+            feature_rows.append({
+                'reference_month': ref_m, 'period': period,
+                'feature_name': fname, 'grupo': grupo, 'coeficiente': coef,
+                'bin_label': str(bin_lbl),
+                'pct_pop': safe_round(pct_pop),
+                'pct_pop_diff_pp': safe_round(pct_pop_diff),
+                'volume': volume,
+                'lift': safe_round(lift_val),
+                'lift_trigger': lift_trigger,
+                'psi_feature': safe_round(psi_per_feature[fname]),
+                'psi_within_group': safe_round(psi_per_feature[fname] / psi_group_sums[grupo]) if psi_group_sums[grupo] > 1e-9 else 0.0,
+                'market_name': MARKET, 'metric_key': 'monitoring_features', 'updated_at': NOW,
+            })
+
+    # ============================================================
+    # monitoring_band_migrations_me_br
+    # ============================================================
+    if prev_sub is not None and len(prev_sub) > 0 and not is_train:
+        merged = prev_sub[['id_customer', 'band']].rename(columns={'band': 'prev'}).merge(
+            sub[['id_customer', 'band']].rename(columns={'band': 'curr'}),
+            on='id_customer', how='right'
+        )
+        merged['prev'] = merged['prev'].fillna(-1).astype(int)
+        g = merged.groupby(['prev', 'curr']).size().reset_index(name='count')
+        for _, row in g.iterrows():
+            migration_rows.append({
+                'reference_month': ref_m, 'period': period,
+                'previous_band': int(row['prev']),
+                'current_band':  int(row['curr']),
+                'count': int(row['count']),
+                'pct_of_pop': safe_round(float(row['count']) / total * 100) if total > 0 else None,
+                'market_name': MARKET, 'metric_key': 'monitoring_band_migrations', 'updated_at': NOW,
+            })
 
     prev_sub = sub
 
-for k, v in rows.items():
-    print(f"  {k}: {len(v)} linhas")
+print(f"\nmetricas_metrics  : {len(metrics_rows)} linhas")
+print(f"metricas_band     : {len(band_rows)} linhas")
+print(f"metricas_features : {len(feature_rows)} linhas")
+print(f"metricas_migration: {len(migration_rows)} linhas")
 
-# COMMAND ----------
-
-# DBTITLE 1,MERGE de cada tabela (idempotente, historico preservado)
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType, IntegerType, TimestampType
-)
-
-SCHEMAS = {
-    "performance": (["performance", "period", "value", "market_name",
-                     "metric_key", "reference_year", "reference_month", "updated_at"],
-                    ["s", "s", "d", "s", "s", "i", "i", "t"],
-                    ["performance", "period", "reference_year", "reference_month"]),
-    "decile_migrations": (["previous_decile", "current_decile", "count", "period",
-                           "market_name", "metric_key", "reference_year",
-                           "reference_month", "updated_at", "update_at"],
-                          ["i", "i", "i", "s", "s", "s", "i", "i", "t", "t"],
-                          ["previous_decile", "current_decile", "period",
-                           "reference_year", "reference_month"]),
-    "iep": (["variaveis", "period", "value", "market_name", "metric_key",
-             "reference_year", "reference_month", "updated_at"],
-            ["s", "s", "d", "s", "s", "i", "i", "t"],
-            ["variaveis", "period", "reference_year", "reference_month"]),
-}
-# tabelas por banda
-for t in ["dist_por_decil", "dist_por_decil_diff_pp", "perc_bad_decil",
-          "perc_bad_decil_diff_pp", "df_dist_bad_decil",
-          "df_dist_bad_decil_diff_pp", "iep_por_decil"]:
-    SCHEMAS[t] = (["decil", "period", "value", "market_name", "metric_key",
-                   "reference_year", "reference_month", "updated_at"],
-                  ["i", "s", "d", "s", "s", "i", "i", "t"],
-                  ["decil", "period", "reference_year", "reference_month"])
-# tabelas var+grupo (value DOUBLE)
-for t in ["iep_vars", "risco_relativo"]:
-    SCHEMAS[t] = (["variaveis", "grupo", "period", "value", "market_name",
-                   "metric_key", "reference_year", "reference_month", "updated_at"],
-                  ["s", "s", "s", "d", "s", "s", "i", "i", "t"],
-                  ["variaveis", "grupo", "period", "reference_year", "reference_month"])
-# risco_relativo_trigger: value STRING ('true'/'false')
-SCHEMAS["risco_relativo_trigger"] = (
-    ["variaveis", "grupo", "period", "value", "market_name",
-     "metric_key", "reference_year", "reference_month", "updated_at"],
-    ["s", "s", "s", "s", "s", "s", "i", "i", "t"],
-    ["variaveis", "grupo", "period", "reference_year", "reference_month"]
-)
-# tabelas var+grupo+coef
-for t in ["dist_vars", "dist_vars_diff_pp", "vol_vars"]:
-    SCHEMAS[t] = (["variaveis", "grupo", "coeficientes", "period", "value",
-                   "market_name", "metric_key", "reference_year",
-                   "reference_month", "updated_at"],
-                  ["s", "s", "d", "s", "d", "s", "s", "i", "i", "t"],
-                  ["variaveis", "grupo", "period", "reference_year", "reference_month"])
-
-_TYPE = {"s": StringType(), "d": DoubleType(), "i": IntegerType(), "t": TimestampType()}
-
-
-def merge_table(metric, data):
-    cols, types, keys = SCHEMAS[metric]
-    tname = f"ds_catalog_dev.credit_engine.{metric}_me_br"
-    if not data:
-        print(f"  {tname}: 0 linhas, skip")
+# ============================================================
+# Escrita (OVERWRITE em todas)
+# ============================================================
+def write_overwrite(rows, schema, table_name):
+    if not rows:
+        print(f"  {table_name}: 0 linhas, skip")
         return
-    schema = StructType([StructField(c, _TYPE[t], True) for c, t in zip(cols, types)])
-    sdf = spark.createDataFrame(data, schema=schema)
-    sdf.createOrReplaceTempView("_src")
-    on = " AND ".join([f"tgt.{k} = src.{k}" for k in keys])
-    upd = ", ".join([f"tgt.{c} = src.{c}" for c in cols if c not in keys])
-    spark.sql(f"""
-        MERGE INTO {tname} AS tgt USING _src AS src ON {on}
-        WHEN MATCHED THEN UPDATE SET {upd}
-        WHEN NOT MATCHED THEN INSERT *
-    """)
-    print(f"  {tname}: {len(data)} linhas mergeadas")
+    pdf = pd.DataFrame(rows)
+    sdf = spark.createDataFrame(pdf, schema=schema)
+    sdf.write.format('delta').mode('overwrite').option('overwriteSchema', 'true').saveAsTable(table_name)
+    print(f"  {table_name}: {len(rows)} linhas (OVERWRITE)")
 
+schema_metrics = StructType([
+    StructField('reference_month', DateType()),
+    StructField('period', StringType()),
+    StructField('total_clients', IntegerType()),
+    StructField('pop_baixo', IntegerType()), StructField('pop_medio', IntegerType()), StructField('pop_alto', IntegerType()),
+    StructField('pct_baixo', DoubleType()), StructField('pct_medio', DoubleType()), StructField('pct_alto', DoubleType()),
+    StructField('avg_score', DoubleType()), StructField('median_score', DoubleType()),
+    StructField('avg_credit_limit', DoubleType()), StructField('median_credit_limit', DoubleType()), StructField('total_credit_limit', DoubleType()),
+    StructField('avg_credit_limit_clp', DoubleType()), StructField('median_credit_limit_clp', DoubleType()), StructField('total_credit_limit_clp', DoubleType()),
+    StructField('total_billed_usd', DoubleType()), StructField('overdue_usd', DoubleType()), StructField('overdue_pct', DoubleType()),
+    StructField('bad_rate_overall', DoubleType()),
+    StructField('bad_rate_baixo', DoubleType()), StructField('bad_rate_medio', DoubleType()), StructField('bad_rate_alto', DoubleType()),
+    StructField('lift_baixo', DoubleType()), StructField('lift_medio', DoubleType()), StructField('lift_alto', DoubleType()),
+    StructField('ks', DoubleType()), StructField('roc_auc', DoubleType()), StructField('gini', DoubleType()),
+    StructField('psi_vs_train', DoubleType()), StructField('psi_vs_train_classification', StringType()),
+    StructField('psi_rolling', DoubleType()), StructField('psi_rolling_classification', StringType()),
+    StructField('pct_improved', DoubleType()), StructField('pct_maintained', DoubleType()), StructField('pct_worsened', DoubleType()),
+    StructField('market_name', StringType()), StructField('metric_key', StringType()), StructField('updated_at', TimestampType()),
+])
 
-for metric, data in rows.items():
-    merge_table(metric, data)
+schema_band = StructType([
+    StructField('reference_month', DateType()), StructField('period', StringType()),
+    StructField('band', IntegerType()), StructField('band_name', StringType()),
+    StructField('pct_pop', DoubleType()), StructField('pct_pop_diff_pp', DoubleType()),
+    StructField('bad_rate', DoubleType()), StructField('bad_rate_diff_pp', DoubleType()),
+    StructField('pct_bad_share', DoubleType()), StructField('pct_bad_share_diff_pp', DoubleType()),
+    StructField('psi_contribution', DoubleType()),
+    StructField('market_name', StringType()), StructField('metric_key', StringType()), StructField('updated_at', TimestampType()),
+])
 
-print("\nMonitoramento gravado. Historico preservado (MERGE, sem DROP).")
+schema_features = StructType([
+    StructField('reference_month', DateType()), StructField('period', StringType()),
+    StructField('feature_name', StringType()), StructField('grupo', StringType()), StructField('coeficiente', DoubleType()),
+    StructField('bin_label', StringType()),
+    StructField('pct_pop', DoubleType()), StructField('pct_pop_diff_pp', DoubleType()),
+    StructField('volume', DoubleType()),
+    StructField('lift', DoubleType()), StructField('lift_trigger', StringType()),
+    StructField('psi_feature', DoubleType()), StructField('psi_within_group', DoubleType()),
+    StructField('market_name', StringType()), StructField('metric_key', StringType()), StructField('updated_at', TimestampType()),
+])
 
-# COMMAND ----------
+schema_migration = StructType([
+    StructField('reference_month', DateType()), StructField('period', StringType()),
+    StructField('previous_band', IntegerType()), StructField('current_band', IntegerType()),
+    StructField('count', IntegerType()), StructField('pct_of_pop', DoubleType()),
+    StructField('market_name', StringType()), StructField('metric_key', StringType()), StructField('updated_at', TimestampType()),
+])
 
-# DBTITLE 1,Sanity checks: tabelas de monitoramento
-# MAGIC %sql
-# MAGIC SELECT 'performance_me_br' AS tabela, COUNT(*) AS linhas,
-# MAGIC   COUNT(DISTINCT period) AS periodos FROM ds_catalog_dev.credit_engine.performance_me_br
-# MAGIC UNION ALL SELECT 'dist_por_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_por_decil_me_br
-# MAGIC UNION ALL SELECT 'perc_bad_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.perc_bad_decil_me_br
-# MAGIC UNION ALL SELECT 'df_dist_bad_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.df_dist_bad_decil_me_br
-# MAGIC UNION ALL SELECT 'decile_migrations_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.decile_migrations_me_br
-# MAGIC UNION ALL SELECT 'iep_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.iep_me_br
-# MAGIC UNION ALL SELECT 'iep_por_decil_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.iep_por_decil_me_br
-# MAGIC UNION ALL SELECT 'iep_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.iep_vars_me_br
-# MAGIC UNION ALL SELECT 'dist_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_vars_me_br
-# MAGIC UNION ALL SELECT 'vol_vars_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.vol_vars_me_br
-# MAGIC UNION ALL SELECT 'risco_relativo_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.risco_relativo_me_br
-# MAGIC UNION ALL SELECT 'risco_relativo_trigger_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.risco_relativo_trigger_me_br
-# MAGIC UNION ALL SELECT 'dist_por_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_por_decil_diff_pp_me_br
-# MAGIC UNION ALL SELECT 'perc_bad_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.perc_bad_decil_diff_pp_me_br
-# MAGIC UNION ALL SELECT 'df_dist_bad_decil_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.df_dist_bad_decil_diff_pp_me_br
-# MAGIC UNION ALL SELECT 'dist_vars_diff_pp_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.dist_vars_diff_pp_me_br
+print("\nEscrevendo tabelas:")
+write_overwrite(metrics_rows,   schema_metrics,   'ds_catalog_dev.credit_engine.monitoring_metrics_me_br')
+write_overwrite(band_rows,      schema_band,      'ds_catalog_dev.credit_engine.monitoring_band_me_br')
+write_overwrite(feature_rows,   schema_features,  'ds_catalog_dev.credit_engine.monitoring_features_me_br')
+write_overwrite(migration_rows, schema_migration, 'ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br')
 
-# COMMAND ----------
-
-# DBTITLE 1,Inspecao: performance e PSI da safra mais recente
-# MAGIC %sql
-# MAGIC SELECT performance, period, ROUND(value, 4) AS value
-# MAGIC FROM ds_catalog_dev.credit_engine.performance_me_br
-# MAGIC WHERE period <> 'Train'
-# MAGIC ORDER BY reference_year DESC, reference_month DESC, performance
-# MAGIC LIMIT 15
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC -- PSI por feature na ultima safra (>0.25 = mudanca significativa)
-# MAGIC SELECT variaveis, period, ROUND(value, 4) AS psi,
-# MAGIC   CASE WHEN value < 0.10 THEN 'Estavel'
-# MAGIC        WHEN value < 0.25 THEN 'Moderado'
-# MAGIC        ELSE 'Significativo' END AS classificacao
-# MAGIC FROM ds_catalog_dev.credit_engine.iep_me_br
-# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.iep_me_br WHERE period <> 'Train')
-# MAGIC ORDER BY value DESC
+print("\nOK: 4 tabelas de metricas atualizadas.")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Validacoes adicionais — qualidade profissional
-# MAGIC
-# MAGIC Cinco blocos de verificacao cobrindo cobertura, alertas consolidados,
-# MAGIC monotonicidade da discriminacao, diagnostico de PSI anomalo e tendencia
-# MAGIC de performance. Nenhum deles altera dados — sao apenas SELECTs.
+# MAGIC ## Sanity checks
 
 # COMMAND ----------
 
-# DBTITLE 1,V1: Cobertura e distribuicao por banda por periodo
 # MAGIC %sql
-# MAGIC -- Quantos clientes por banda, qual a concentracao em cada safra OOT.
-# MAGIC -- Bandas muito concentradas (>80% em uma faixa) sinalizam score degenerado.
-# MAGIC SELECT
-# MAGIC   d.period,
-# MAGIC   d.reference_year,
-# MAGIC   d.reference_month,
-# MAGIC   SUM(v.value)                                         AS total_clientes,
-# MAGIC   MAX(CASE WHEN d.decil = 1 THEN ROUND(d.value,2) END) AS pct_baixo,
-# MAGIC   MAX(CASE WHEN d.decil = 2 THEN ROUND(d.value,2) END) AS pct_medio,
-# MAGIC   MAX(CASE WHEN d.decil = 3 THEN ROUND(d.value,2) END) AS pct_alto,
-# MAGIC   MAX(CASE WHEN d.decil = -1 THEN ROUND(d.value,2) END) AS pct_sem_score,
-# MAGIC   CASE
-# MAGIC     WHEN MAX(CASE WHEN d.decil IN (1,2,3) THEN d.value ELSE 0 END) > 80
-# MAGIC     THEN 'ALERTA: concentracao alta' ELSE 'OK'
-# MAGIC   END AS flag_concentracao
-# MAGIC FROM ds_catalog_dev.credit_engine.dist_por_decil_me_br d
-# MAGIC JOIN ds_catalog_dev.credit_engine.vol_vars_me_br v
-# MAGIC   ON v.period = d.period
-# MAGIC  AND v.variaveis LIKE 'score=%'
-# MAGIC  AND v.periodo_ref = d.period
-# MAGIC GROUP BY d.period, d.reference_year, d.reference_month
-# MAGIC ORDER BY d.reference_year DESC, d.reference_month DESC
+# MAGIC SELECT 'monitoring_me_br' AS tabela, COUNT(*) AS linhas, COUNT(DISTINCT reference_month) AS safras FROM ds_catalog_dev.credit_engine.monitoring_me_br
+# MAGIC UNION ALL SELECT 'monitoring_metrics_me_br',         COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC UNION ALL SELECT 'monitoring_band_me_br',            COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_band_me_br
+# MAGIC UNION ALL SELECT 'monitoring_features_me_br',        COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC UNION ALL SELECT 'monitoring_band_migrations_me_br', COUNT(*), COUNT(DISTINCT period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
 
 # COMMAND ----------
 
-# DBTITLE 1,V1b: Cobertura simplificada (volume por banda)
 # MAGIC %sql
-# MAGIC -- Volume absoluto de clientes por banda por periodo OOT.
+# MAGIC -- Performance (KS/ROC/Gini) e PSI por safra OOT
+# MAGIC SELECT period, reference_month,
+# MAGIC        ROUND(ks,4)               AS ks,
+# MAGIC        ROUND(roc_auc,4)          AS roc,
+# MAGIC        ROUND(gini,4)             AS gini,
+# MAGIC        ROUND(psi_vs_train,4)     AS psi_vs_train,
+# MAGIC        psi_vs_train_classification,
+# MAGIC        ROUND(bad_rate_overall,2) AS bad_rate_pct
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC WHERE period <> 'Train'
+# MAGIC ORDER BY reference_month DESC
+# MAGIC LIMIT 24
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Distribuicao por banda na safra mais recente
+# MAGIC SELECT period, band_name,
+# MAGIC        ROUND(pct_pop,2)              AS pct_pop,
+# MAGIC        ROUND(pct_pop_diff_pp,2)      AS pct_pop_diff_pp,
+# MAGIC        ROUND(bad_rate,2)             AS bad_rate,
+# MAGIC        ROUND(bad_rate_diff_pp,2)     AS bad_rate_diff_pp,
+# MAGIC        ROUND(pct_bad_share,2)        AS pct_bad_share,
+# MAGIC        ROUND(psi_contribution,4)     AS psi_contribution
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_band_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_me_br WHERE period <> 'Train')
+# MAGIC ORDER BY band
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Features com maior PSI na safra mais recente
+# MAGIC SELECT period, feature_name, grupo,
+# MAGIC        ROUND(MAX(psi_feature), 4)  AS psi,
+# MAGIC        CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
+# MAGIC             WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
+# MAGIC             ELSE 'Significativo' END AS classificacao
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br WHERE period <> 'Train')
+# MAGIC GROUP BY period, feature_name, grupo
+# MAGIC ORDER BY psi DESC
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Triggers de risco relativo na safra mais recente
+# MAGIC SELECT feature_name, grupo, bin_label, ROUND(lift,3) AS lift, lift_trigger, ROUND(volume,0) AS volume
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_features_me_br WHERE period <> 'Train')
+# MAGIC   AND lift_trigger = 'true'
+# MAGIC ORDER BY ABS(lift - 1) DESC
+# MAGIC LIMIT 20
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Matriz de migracao da safra mais recente (heatmap)
+# MAGIC SELECT previous_band, current_band, count, ROUND(pct_of_pop, 2) AS pct
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br
+# MAGIC WHERE period = (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.monitoring_band_migrations_me_br)
+# MAGIC ORDER BY previous_band, current_band
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- V1: Diagnostico de campos NULL em monitoring_metrics_me_br
+# MAGIC -- Safras sem target = target ainda nao maduro (normal para meses recentes)
+# MAGIC -- Safras sem billing = join com abt_inference sem match (verificar pipeline)
 # MAGIC SELECT
 # MAGIC   period,
-# MAGIC   reference_year,
 # MAGIC   reference_month,
-# MAGIC   MAX(CASE WHEN decil = 1 THEN ROUND(value,2) END) AS pct_baixo,
-# MAGIC   MAX(CASE WHEN decil = 2 THEN ROUND(value,2) END) AS pct_medio,
-# MAGIC   MAX(CASE WHEN decil = 3 THEN ROUND(value,2) END) AS pct_alto,
-# MAGIC   MAX(CASE WHEN decil = -1 THEN ROUND(value,2) END) AS pct_sem_score
-# MAGIC FROM ds_catalog_dev.credit_engine.dist_por_decil_me_br
-# MAGIC WHERE period <> 'Train'
-# MAGIC GROUP BY period, reference_year, reference_month
-# MAGIC ORDER BY reference_year DESC, reference_month DESC
+# MAGIC   total_clients,
+# MAGIC   CASE WHEN bad_rate_overall IS NULL THEN 'SEM TARGET' ELSE 'com target' END AS status_target,
+# MAGIC   CASE WHEN ks IS NULL            THEN 'NULL' ELSE CAST(ROUND(ks,4) AS STRING)      END AS ks,
+# MAGIC   CASE WHEN roc_auc IS NULL       THEN 'NULL' ELSE CAST(ROUND(roc_auc,4) AS STRING) END AS roc_auc,
+# MAGIC   CASE WHEN total_billed_usd IS NULL THEN 'SEM BILLING' ELSE CAST(ROUND(total_billed_usd,0) AS STRING) END AS total_billed,
+# MAGIC   CASE WHEN avg_credit_limit IS NULL THEN 'SEM LIMITE'  ELSE CAST(ROUND(avg_credit_limit,0) AS STRING) END AS avg_limit,
+# MAGIC   CASE WHEN psi_rolling IS NULL   THEN 'NULL (1o periodo)' ELSE CAST(ROUND(psi_rolling,4) AS STRING) END AS psi_rolling
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC ORDER BY reference_month
 
 # COMMAND ----------
 
-# DBTITLE 1,V2: Alerta consolidado por periodo (PSI + performance)
 # MAGIC %sql
-# MAGIC -- Painel de alertas: cada linha e um periodo OOT com resumo de todos os sinais.
-# MAGIC -- Colunas de flag: 1 = alerta disparado, 0 = normal.
-# MAGIC WITH psi_pivot AS (
-# MAGIC   SELECT
-# MAGIC     period, reference_year, reference_month,
-# MAGIC     -- Exclui portfolio_score do PSI_MAX pois e variavel de grupo (binning degenera)
-# MAGIC     MAX(CASE WHEN variaveis <> 'portfolio_score' THEN value ELSE 0 END) AS psi_max_features,
-# MAGIC     MAX(CASE WHEN variaveis = 'payment_term'    THEN value ELSE 0 END) AS psi_payment_term,
-# MAGIC     MAX(CASE WHEN variaveis = 'overdue_pct'     THEN value ELSE 0 END) AS psi_overdue_pct,
-# MAGIC     MAX(CASE WHEN variaveis = 'portfolio_score' THEN value ELSE 0 END) AS psi_portfolio_score,
-# MAGIC     SUM(CASE WHEN value >= 0.25 AND variaveis <> 'portfolio_score' THEN 1 ELSE 0 END) AS n_features_significativo,
-# MAGIC     SUM(CASE WHEN value BETWEEN 0.10 AND 0.25 AND variaveis <> 'portfolio_score' THEN 1 ELSE 0 END) AS n_features_moderado
-# MAGIC   FROM ds_catalog_dev.credit_engine.iep_me_br
+# MAGIC -- V2: Evolucao do PSI vs Train por safra OOT (todas as safras)
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   reference_month,
+# MAGIC   ROUND(psi_vs_train, 4)              AS psi_vs_train,
+# MAGIC   psi_vs_train_classification,
+# MAGIC   ROUND(psi_rolling, 4)               AS psi_rolling,
+# MAGIC   psi_rolling_classification,
+# MAGIC   ROUND(bad_rate_overall, 2)          AS bad_rate_pct,
+# MAGIC   ROUND(pct_baixo, 1) AS pct_baixo,
+# MAGIC   ROUND(pct_medio, 1) AS pct_medio,
+# MAGIC   ROUND(pct_alto,  1) AS pct_alto
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_metrics_me_br
+# MAGIC ORDER BY reference_month
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- V3: PSI por feature ao longo do tempo (ultimas 6 safras OOT)
+# MAGIC SELECT
+# MAGIC   period,
+# MAGIC   feature_name,
+# MAGIC   grupo,
+# MAGIC   ROUND(MAX(psi_feature), 4)       AS psi_feature,
+# MAGIC   ROUND(MAX(psi_within_group), 4)  AS psi_share_do_grupo,
+# MAGIC   CASE WHEN MAX(psi_feature) < 0.10 THEN 'Estavel'
+# MAGIC        WHEN MAX(psi_feature) < 0.25 THEN 'Moderado'
+# MAGIC        ELSE 'Significativo' END     AS classificacao
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
+# MAGIC WHERE period IN (
+# MAGIC   SELECT DISTINCT period FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
 # MAGIC   WHERE period <> 'Train'
-# MAGIC   GROUP BY period, reference_year, reference_month
-# MAGIC ),
-# MAGIC perf AS (
-# MAGIC   SELECT period,
-# MAGIC     MAX(CASE WHEN performance = 'ROC'  THEN ROUND(value,4) END) AS roc,
-# MAGIC     MAX(CASE WHEN performance = 'KS'   THEN ROUND(value,4) END) AS ks,
-# MAGIC     MAX(CASE WHEN performance = 'Gini' THEN ROUND(value,4) END) AS gini
-# MAGIC   FROM ds_catalog_dev.credit_engine.performance_me_br
-# MAGIC   WHERE period <> 'Train'
-# MAGIC   GROUP BY period
-# MAGIC ),
-# MAGIC train_perf AS (
-# MAGIC   SELECT
-# MAGIC     MAX(CASE WHEN performance = 'ROC' THEN value END) AS roc_train
-# MAGIC   FROM ds_catalog_dev.credit_engine.performance_me_br WHERE period = 'Train'
+# MAGIC   ORDER BY period DESC LIMIT 6
 # MAGIC )
-# MAGIC SELECT
-# MAGIC   p.period,
-# MAGIC   p.reference_year,
-# MAGIC   p.reference_month,
-# MAGIC   ROUND(pf.roc,   4) AS roc,
-# MAGIC   ROUND(pf.ks,    4) AS ks,
-# MAGIC   ROUND(pf.gini,  4) AS gini,
-# MAGIC   ROUND(p.psi_max_features, 4) AS psi_max_features,
-# MAGIC   p.n_features_significativo,
-# MAGIC   p.n_features_moderado,
-# MAGIC   -- Flags de alerta
-# MAGIC   CASE WHEN pf.roc < 0.50                                    THEN 1 ELSE 0 END AS flag_roc_abaixo_random,
-# MAGIC   CASE WHEN pf.roc < (SELECT roc_train FROM train_perf) - 0.10 THEN 1 ELSE 0 END AS flag_roc_queda_10pp,
-# MAGIC   CASE WHEN pf.ks  < 0.10                                    THEN 1 ELSE 0 END AS flag_ks_baixo,
-# MAGIC   CASE WHEN p.psi_max_features >= 0.25                       THEN 1 ELSE 0 END AS flag_psi_significativo,
-# MAGIC   CASE WHEN p.psi_payment_term >= 0.25                       THEN 1 ELSE 0 END AS flag_psi_payment_term,
-# MAGIC   CASE WHEN p.psi_overdue_pct  >= 0.25                       THEN 1 ELSE 0 END AS flag_psi_overdue_pct
-# MAGIC FROM psi_pivot p
-# MAGIC LEFT JOIN perf pf ON pf.period = p.period
-# MAGIC ORDER BY p.reference_year DESC, p.reference_month DESC
+# MAGIC GROUP BY period, feature_name, grupo
+# MAGIC ORDER BY feature_name, period
 
 # COMMAND ----------
 
-# DBTITLE 1,V3: Monotonicidade da discriminacao (bad rate BAIXO < MEDIO < ALTO)
 # MAGIC %sql
-# MAGIC -- O modelo e discriminante se bad_rate(ALTO) > bad_rate(MEDIO) > bad_rate(BAIXO).
-# MAGIC -- Linhas com flag_invertido = 'SIM' indicam falha de ordenacao de risco.
-# MAGIC WITH br AS (
-# MAGIC   SELECT period, reference_year, reference_month,
-# MAGIC     MAX(CASE WHEN decil = 1 THEN ROUND(value,4) END) AS bad_rate_baixo,
-# MAGIC     MAX(CASE WHEN decil = 2 THEN ROUND(value,4) END) AS bad_rate_medio,
-# MAGIC     MAX(CASE WHEN decil = 3 THEN ROUND(value,4) END) AS bad_rate_alto
-# MAGIC   FROM ds_catalog_dev.credit_engine.perc_bad_decil_me_br
-# MAGIC   GROUP BY period, reference_year, reference_month
-# MAGIC )
+# MAGIC -- V4: Resumo de triggers por safra (contagem de bins com lift fora [0.5, 2.0])
 # MAGIC SELECT
 # MAGIC   period,
-# MAGIC   bad_rate_baixo,
-# MAGIC   bad_rate_medio,
-# MAGIC   bad_rate_alto,
-# MAGIC   ROUND(bad_rate_alto - bad_rate_baixo, 4) AS spread_alto_baixo,
-# MAGIC   CASE
-# MAGIC     WHEN bad_rate_alto > bad_rate_medio AND bad_rate_medio > bad_rate_baixo THEN 'OK'
-# MAGIC     WHEN bad_rate_alto > bad_rate_baixo                                     THEN 'PARCIAL'
-# MAGIC     ELSE 'INVERTIDO'
-# MAGIC   END AS monotonicidade,
-# MAGIC   CASE
-# MAGIC     WHEN bad_rate_alto IS NULL OR bad_rate_baixo IS NULL THEN 'SEM DADOS'
-# MAGIC     WHEN bad_rate_alto <= bad_rate_baixo               THEN 'ALERTA: inversao total'
-# MAGIC     ELSE 'OK'
-# MAGIC   END AS flag_inversao
-# MAGIC FROM br
-# MAGIC WHERE period <> 'Train'
-# MAGIC ORDER BY reference_year DESC, reference_month DESC
-
-# COMMAND ----------
-
-# DBTITLE 1,V4: Diagnostico PSI portfolio_score (variavel de grupo)
-# MAGIC %sql
-# MAGIC -- portfolio_score e atribuido por grupo economico (76 grupos distintos).
-# MAGIC -- No nivel cliente, muitos clientes compartilham o mesmo valor -> binning
-# MAGIC -- quantilico pode colapsar -> PSI artificialmente alto. Verificar distribuicao.
-# MAGIC SELECT
-# MAGIC   period,
-# MAGIC   variaveis,
-# MAGIC   ROUND(value, 4) AS pct_populacao,
-# MAGIC   coeficientes
-# MAGIC FROM ds_catalog_dev.credit_engine.dist_vars_me_br
-# MAGIC WHERE variaveis LIKE 'portfolio_score=%'
-# MAGIC   AND period IN (
-# MAGIC     'Train',
-# MAGIC     (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.dist_vars_me_br WHERE period <> 'Train')
-# MAGIC   )
-# MAGIC ORDER BY period, variaveis
-
-# COMMAND ----------
-
-# DBTITLE 1,V4b: Numero de valores distintos de portfolio_score por periodo
-# MAGIC %sql
-# MAGIC -- Se portfolio_score tem poucos valores unicos em Train (ex: 5 bins colapsados),
-# MAGIC -- o PSI e invalido e deve ser tratado como categorico ou excluido do alarme.
-# MAGIC SELECT
-# MAGIC   period,
-# MAGIC   COUNT(DISTINCT variaveis) AS n_bins_distintos,
-# MAGIC   SUM(value)                AS soma_pct_check  -- deve ser ~100
-# MAGIC FROM ds_catalog_dev.credit_engine.dist_vars_me_br
-# MAGIC WHERE variaveis LIKE 'portfolio_score=%'
+# MAGIC   COUNT(*) FILTER (WHERE lift_trigger = 'true')  AS bins_em_alerta,
+# MAGIC   COUNT(*) FILTER (WHERE lift_trigger = 'false') AS bins_ok,
+# MAGIC   COUNT(*) FILTER (WHERE lift IS NULL)            AS bins_sem_target,
+# MAGIC   ROUND(COUNT(*) FILTER (WHERE lift_trigger = 'true') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE lift IS NOT NULL), 0), 1) AS pct_bins_alerta
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_features_me_br
 # MAGIC GROUP BY period
 # MAGIC ORDER BY period
 
 # COMMAND ----------
 
-# DBTITLE 1,V5: Tendencia de performance ROC/KS com flags de alerta
 # MAGIC %sql
-# MAGIC -- Serie temporal de ROC e KS com indicadores de alerta por periodo.
-# MAGIC -- flag_critico: ROC < 0.50 (modelo pior que aleatório — investigar imediatamente).
-# MAGIC -- flag_atencao: ROC entre 0.50 e 0.55 ou KS < 0.15 (degradacao significativa).
+# MAGIC -- V5: Estabilidade das bandas ao longo do tempo
+# MAGIC -- Verifica se a distribuicao BAIXO/MEDIO/ALTO esta estavel (diff_pp vs Train)
 # MAGIC SELECT
-# MAGIC   period,
-# MAGIC   reference_year,
-# MAGIC   reference_month,
-# MAGIC   ROUND(MAX(CASE WHEN performance = 'ROC'  THEN value END), 4) AS roc,
-# MAGIC   ROUND(MAX(CASE WHEN performance = 'KS'   THEN value END), 4) AS ks,
-# MAGIC   ROUND(MAX(CASE WHEN performance = 'Gini' THEN value END), 4) AS gini,
-# MAGIC   CASE
-# MAGIC     WHEN MAX(CASE WHEN performance = 'ROC' THEN value END) < 0.50 THEN 'CRITICO: abaixo do random'
-# MAGIC     WHEN MAX(CASE WHEN performance = 'ROC' THEN value END) < 0.55 THEN 'ATENCAO: ROC baixo'
-# MAGIC     WHEN MAX(CASE WHEN performance = 'KS'  THEN value END) < 0.15 THEN 'ATENCAO: KS baixo'
-# MAGIC     ELSE 'OK'
-# MAGIC   END AS status_performance
-# MAGIC FROM ds_catalog_dev.credit_engine.performance_me_br
-# MAGIC GROUP BY period, reference_year, reference_month
-# MAGIC ORDER BY
-# MAGIC   CASE WHEN period = 'Train' THEN 0 ELSE 1 END,
-# MAGIC   reference_year,
-# MAGIC   reference_month
-
-# COMMAND ----------
-
-# DBTITLE 1,V6: PSI das variaveis pct_months_overdue (diagnostico de bins colapsados)
-# MAGIC %sql
-# MAGIC -- PSI = 0 para pct_months_overdue_* e esperado se a maioria dos clientes
-# MAGIC -- tem 0% de atraso -> todos no mesmo bin -> PSI estruturalmente zero.
-# MAGIC -- Confirmar: se o bin '(-inf, 0]' ou similar concentra >95% da populacao.
-# MAGIC SELECT
-# MAGIC   variaveis,
-# MAGIC   period,
-# MAGIC   ROUND(value, 4) AS pct_populacao
-# MAGIC FROM ds_catalog_dev.credit_engine.dist_vars_me_br
-# MAGIC WHERE variaveis LIKE 'pct_months_overdue_10_20=%'
-# MAGIC   AND period IN (
-# MAGIC     'Train',
-# MAGIC     (SELECT MAX(period) FROM ds_catalog_dev.credit_engine.dist_vars_me_br WHERE period <> 'Train')
-# MAGIC   )
-# MAGIC ORDER BY period, variaveis
-
-# COMMAND ----------
-
-# DBTITLE 1,V7: Triggers de risco relativo disparados — top alertas por periodo
-# MAGIC %sql
-# MAGIC -- Features com lift fora de [0.5, 2.0] sinalizam instabilidade do poder
-# MAGIC -- discriminante para aquela faixa. Listar as mais frequentes.
-# MAGIC SELECT
-# MAGIC   variaveis,
-# MAGIC   grupo,
-# MAGIC   COUNT(DISTINCT period) AS n_periodos_alerta,
-# MAGIC   MIN(period)            AS primeira_ocorrencia,
-# MAGIC   MAX(period)            AS ultima_ocorrencia
-# MAGIC FROM ds_catalog_dev.credit_engine.risco_relativo_trigger_me_br
-# MAGIC WHERE value = 'true'
-# MAGIC   AND period <> 'Train'
-# MAGIC GROUP BY variaveis, grupo
-# MAGIC ORDER BY n_periodos_alerta DESC, ultima_ocorrencia DESC
-# MAGIC LIMIT 30
-
-# COMMAND ----------
-
-# DBTITLE 1,V8: Matriz de migracao de bandas — safra mais recente
-# MAGIC %sql
-# MAGIC -- Mostra quantos clientes mudaram de banda no ultimo mes.
-# MAGIC -- Diagonal = clientes estáveis; fora da diagonal = migracao.
-# MAGIC -- Alta migracao para banda -1 (sem score) pode indicar problema de cobertura.
-# MAGIC SELECT
-# MAGIC   previous_decile,
-# MAGIC   current_decile,
-# MAGIC   count,
-# MAGIC   ROUND(100.0 * count / SUM(count) OVER (PARTITION BY period), 2) AS pct_do_total,
-# MAGIC   period
-# MAGIC FROM ds_catalog_dev.credit_engine.decile_migrations_me_br
-# MAGIC WHERE period = (
-# MAGIC   SELECT MAX(period) FROM ds_catalog_dev.credit_engine.decile_migrations_me_br WHERE period <> 'Train'
-# MAGIC )
-# MAGIC ORDER BY previous_decile, current_decile
-
-# COMMAND ----------
-
-# DBTITLE 1,V9: Estabilidade do score — distribuicao do integrated_score por periodo
-# MAGIC %sql
-# MAGIC -- Verifica se o score continua com range e media razoaveis ao longo do tempo.
-# MAGIC -- Quedas abruptas de max ou mudancas de media sinalizam problema de dados.
-# MAGIC SELECT
-# MAGIC   DATE_FORMAT(reference_month, 'yyyy/MM') AS period,
-# MAGIC   COUNT(*)                                AS n_clientes,
-# MAGIC   ROUND(AVG(integrated_score),   4)       AS media_score,
-# MAGIC   ROUND(STDDEV(integrated_score),4)        AS std_score,
-# MAGIC   ROUND(MIN(integrated_score),   4)       AS min_score,
-# MAGIC   ROUND(MAX(integrated_score),   4)       AS max_score,
-# MAGIC   ROUND(PERCENTILE(integrated_score, 0.25), 4) AS p25,
-# MAGIC   ROUND(PERCENTILE(integrated_score, 0.50), 4) AS p50,
-# MAGIC   ROUND(PERCENTILE(integrated_score, 0.75), 4) AS p75,
-# MAGIC   COUNT(CASE WHEN integrated_score IS NULL THEN 1 END) AS n_nulos
-# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_me_br
-# MAGIC GROUP BY DATE_FORMAT(reference_month, 'yyyy/MM'), reference_month
-# MAGIC ORDER BY reference_month
+# MAGIC   b.period,
+# MAGIC   b.reference_month,
+# MAGIC   MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop, 1)          END) AS pct_baixo,
+# MAGIC   MAX(CASE WHEN b.band = 1   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS baixo_diff_pp,
+# MAGIC   MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop, 1)          END) AS pct_medio,
+# MAGIC   MAX(CASE WHEN b.band = 2   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS medio_diff_pp,
+# MAGIC   MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop, 1)          END) AS pct_alto,
+# MAGIC   MAX(CASE WHEN b.band = 3   THEN ROUND(b.pct_pop_diff_pp, 2)  END) AS alto_diff_pp,
+# MAGIC   MAX(CASE WHEN b.band = 100 THEN ROUND(b.psi_contribution, 4) END) AS psi_total,
+# MAGIC   MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate, 2)         END) AS bad_rate_total_pct,
+# MAGIC   MAX(CASE WHEN b.band = 100 THEN ROUND(b.bad_rate_diff_pp, 2) END) AS bad_rate_diff_pp
+# MAGIC FROM ds_catalog_dev.credit_engine.monitoring_band_me_br b
+# MAGIC GROUP BY b.period, b.reference_month
+# MAGIC ORDER BY b.reference_month

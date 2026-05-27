@@ -55,35 +55,32 @@ print(f"Data de referencia: {effective_date}")
 # COMMAND ----------
 
 # DBTITLE 0,DROP + CREATE abt_inference_me_br_v7
-dbutils.fs.rm("dbfs:/user/hive/warehouse/teste.db/abt_inference_me_br", True)
-spark.sql("DROP TABLE IF EXISTS ds_catalog_dev.credit_engine.abt_inference_me_br")
-spark.sql("""
-CREATE TABLE ds_catalog_dev.credit_engine.abt_inference_me_br (
-  id_customer            INT,
-  customer_name          STRING,
-  country                STRING,
-  reference_month        DATE,
-  total_amount           DOUBLE    COMMENT 'Total faturado USD',
-  overdue_amount         DOUBLE    COMMENT 'Valor em atraso >7d USD',
-  overdue_pct            DOUBLE    COMMENT '% atraso (escala 0-100)',
-  target                 INT       COMMENT '1 se teve atraso >7d',
-  months_with_billing    INT       COMMENT 'Meses com faturamento na janela',
-  months_defaulted       INT       COMMENT 'Meses inadimplentes (>7d E >=10%)',
-  pct_months_overdue_10_20   DOUBLE COMMENT '% meses faixa 10-20% (escala 0-100)',
-  pct_months_overdue_20_30   DOUBLE COMMENT '% meses faixa 20-30% (escala 0-100)',
-  pct_months_overdue_30_50   DOUBLE COMMENT '% meses faixa 30-50% (escala 0-100)',
-  pct_months_overdue_50_plus DOUBLE COMMENT '% meses faixa 50%+ (escala 0-100)',
-  score                  DOUBLE    COMMENT 'Score individual = sum(pct*med)/10000',
-  historical_weight      DOUBLE    COMMENT 'C = LEAST(1, months/3)',
-  flag_transacted        INT       COMMENT '1=transacionou no mes ref',
-  reference_value               DOUBLE    COMMENT 'Media mensal de exposicao 24m USD (logica motor)',
-  reference_value_clp           DOUBLE    COMMENT 'Media mensal de exposicao 24m em CLP (reference_value USD * taxa CLP/USD do dia)',
-  payment_term                  DOUBLE    COMMENT 'Prazo comercial medio meses, clip motor (<=0 ou >=5 -> 1)',
-  id_customer_group_economic    INT       COMMENT 'cod_pessoa_empresa_pai se existir, senao cod_pessoa_cliente (grupo economico)',
-  updated_at                    TIMESTAMP
-) USING DELTA
-TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
-""")
+# MAGIC %sql
+# MAGIC CREATE TABLE IF NOT EXISTS ds_catalog_dev.credit_engine.abt_inference_me_br (
+# MAGIC   id_customer                  INT,
+# MAGIC   customer_name                STRING,
+# MAGIC   country                      STRING,
+# MAGIC   reference_month              DATE,
+# MAGIC   total_amount                 DOUBLE    COMMENT 'Total faturado USD',
+# MAGIC   overdue_amount               DOUBLE    COMMENT 'Valor em atraso >7d USD',
+# MAGIC   overdue_pct                  DOUBLE    COMMENT '% atraso (escala 0-100)',
+# MAGIC   target                       INT       COMMENT '1 se teve atraso >7d',
+# MAGIC   months_with_billing          INT       COMMENT 'Meses com faturamento na janela',
+# MAGIC   months_defaulted             INT       COMMENT 'Meses inadimplentes (>7d E >=10%)',
+# MAGIC   pct_months_overdue_10_20     DOUBLE    COMMENT '% meses faixa 10-20% (escala 0-100)',
+# MAGIC   pct_months_overdue_20_30     DOUBLE    COMMENT '% meses faixa 20-30% (escala 0-100)',
+# MAGIC   pct_months_overdue_30_50     DOUBLE    COMMENT '% meses faixa 30-50% (escala 0-100)',
+# MAGIC   pct_months_overdue_50_plus   DOUBLE    COMMENT '% meses faixa 50%+ (escala 0-100)',
+# MAGIC   score                        DOUBLE    COMMENT 'Score individual = sum(pct*med)/10000',
+# MAGIC   historical_weight            DOUBLE    COMMENT 'C = LEAST(1, months/3)',
+# MAGIC   flag_transacted              INT       COMMENT '1=transacionou no mes ref',
+# MAGIC   reference_value              DOUBLE    COMMENT 'Media mensal de exposicao 24m USD (logica motor)',
+# MAGIC   reference_value_clp          DOUBLE    COMMENT 'Media mensal de exposicao 24m em CLP (reference_value USD * taxa CLP/USD do dia)',
+# MAGIC   payment_term                 DOUBLE    COMMENT 'Prazo comercial medio meses, clip motor (<=0 ou >=5 -> 1)',
+# MAGIC   id_customer_group_economic   INT       COMMENT 'cod_pessoa_empresa_pai se existir, senao cod_pessoa_cliente (grupo economico)',
+# MAGIC   updated_at                   TIMESTAMP
+# MAGIC ) USING DELTA
+# MAGIC TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 
 # COMMAND ----------
 
@@ -319,21 +316,30 @@ TBLPROPERTIES ('delta.autoOptimize.optimizeWrite' = 'true')
 # COMMAND ----------
 
 # DBTITLE 1,TRAT_CLIENT (JDBC — original)
-host = "CPT-SRVSQLDW01.minerva.local"
-port = 1433
-database = "dw"
-instanceName = 'DWMINERVA'
-url = f"jdbc:sqlserver://{host};instanceName={instanceName};database={database};encrypt=true;trustServerCertificate=true;loginTimeout=30;"
-user = 'svc_engdados_synapse'
-password = dbutils.secrets.get('kv-stargate', 'db-user-svc-engdados-synapse-password')
-df_new_data = (
-    spark.read.format("jdbc")
+user = "svc_ml_aws"
+password = "nch}6,OLs16#Kzd%IJ>6k5H8L"
+ 
+jdbc_url = (
+    "jdbc:sqlserver://172.25.2.76:1433;"
+    "instanceName=DWMINERVA;"
+    "databaseName=dw_trusted;"
+    "encrypt=true;"
+    "trustServerCertificate=true;"
+)
+ 
+df = (
+    spark.read
+    .format("jdbc")
+    .option("url", jdbc_url)
+    .option("query", "SELECT * FROM gestao_de_risco.trat_client WITH (NOLOCK)")
+    .option("database", "dw")
+    .option("user", user)
+    .option("password", password)
     .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver")
-    .option("url", url).option("user", user).option("password", password)
-    .option("query", "select * from dw.gestao_de_risco.trat_client with (nolock)")
     .load()
 )
-df_new_data.createOrReplaceTempView('view_trat_client')
+df.createOrReplaceTempView('view_trat_client')
+
 
 # COMMAND ----------
 
@@ -390,7 +396,7 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 # MAGIC     FROM de_data_lake_prd.dados_mestres.dbpessoa_tab_pessoa AS tp
 # MAGIC     INNER JOIN de_data_lake_prd.faturamento.dbpessoa_tab_analise_credito AS tac ON tac.cod_pessoa = tp.cod_pessoa
 # MAGIC     INNER JOIN de_data_lake_prd.dados_mestres.dbpessoa_tab_resultado_classificacao AS rc ON rc.num_proposta = tac.num_proposta
-# MAGIC     WHERE tp.ind_pessoa_inativa = 0 AND tp.ind_pessoa_estrangeira = 'S'
+# MAGIC     WHERE tp.ind_pessoa_inativa = FALSE AND tp.ind_pessoa_estrangeira = 'S'
 # MAGIC     GROUP BY tp.cod_pessoa, tp.nom_pessoa, tp.dta_nascimento, tp.dta_cadastramento, tp.ind_alerta, tp.ind_blacklist
 # MAGIC )
 # MAGIC SELECT a.codigo_do_cliente, a.codigo_cliente_pagador, a.cliente_comex, a.cliente_tratado,
@@ -532,6 +538,28 @@ df_new_data.createOrReplaceTempView('view_trat_client')
 
 # MAGIC %md
 # MAGIC ## Agregacoes: Parcela → Invoice → Cliente/Mes → Consolidado
+
+# COMMAND ----------
+
+# DBTITLE 1,view_invoice_consolidado
+# MAGIC %sql
+# MAGIC CREATE OR REPLACE TEMP VIEW view_invoice_consolidado AS
+# MAGIC SELECT cod_pessoa_cliente, nom_pessoa_cliente, numero_invoice,
+# MAGIC   mes_safra, ultimo_dia_safra,
+# MAGIC   date_trunc('month', dta_abertura_pedido) AS mes_abertura_pedido,
+# MAGIC   data_faturamento, dta_abertura_pedido,
+# MAGIC   pais_cliente, pais_do_cliente_cadastro, pais_destino,
+# MAGIC   data_fundacao, data_cadastro_minerva, tipo_risco,
+# MAGIC   SUM(valor_final) AS valor_total_invoice,
+# MAGIC   MAX(dias_atraso) AS maior_atraso_invoice,
+# MAGIC   COALESCE(SUM(CASE WHEN dias_atraso > 7 THEN valor_final ELSE 0 END), 0) AS valor_atrasado_invoice,
+# MAGIC   MAX(CASE WHEN numero_classificacao = 1 THEN dias_atraso END) AS atraso_1_parcela,
+# MAGIC   MAX(CASE WHEN numero_classificacao > 1 THEN dias_atraso END) AS maior_atraso_parcelas_restantes
+# MAGIC FROM view_parcelas_com_atraso
+# MAGIC GROUP BY cod_pessoa_cliente, nom_pessoa_cliente, numero_invoice,
+# MAGIC          mes_safra, ultimo_dia_safra, data_faturamento, dta_abertura_pedido,
+# MAGIC          pais_cliente, pais_do_cliente_cadastro, pais_destino,
+# MAGIC          data_fundacao, data_cadastro_minerva, tipo_risco
 
 # COMMAND ----------
 

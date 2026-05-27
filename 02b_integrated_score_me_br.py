@@ -421,4 +421,7 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select * from ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC select * from ds_catalog_dev.credit_engine.apply_model_me_br where id_customer in ('29976','25857')
+
+# COMMAND ----------
+
