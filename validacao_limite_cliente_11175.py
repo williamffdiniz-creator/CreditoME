@@ -323,14 +323,26 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Query 6 — Reconciliação total: billing + sem_fatura = reference_value
+# MAGIC ### Query 6 — Reconciliação total: AVG(billing) + AVG(sem_fatura) = reference_value
 # MAGIC
-# MAGIC Soma o `faturamento_mensal` (Q4) com o `sem_fatura_mensal` (Q5) e compara com `reference_value` armazenado.
-# MAGIC Diferença deve ser **zero**.
+# MAGIC O NB01 faz LEFT JOIN duplo (billing × sem_fatura), criando um cross-product.
+# MAGIC O resultado é: `reference_value = AVG(billing mensal) + AVG(sem_fatura mensal)`,
+# MAGIC onde ambas as médias são calculadas de forma independente sobre os meses da janela 24m.
+# MAGIC
+# MAGIC Confirmação via Q6 anterior: abt 2026-04 retornou `qtd_meses_billing=28`
+# MAGIC (14 meses billing × 2 meses sem_fatura = cross product de 28 linhas) ← prova do mecanismo.
+# MAGIC
+# MAGIC | Safra | avg_billing | avg_sem_fatura | reference_value_esperado |
+# MAGIC |---|---|---|---|
+# MAGIC | abt 2026-03 | 1.655.345,44 | 278.300 / 1 = 278.300 | **1.933.645,44** |
+# MAGIC | abt 2026-04 | 1.655.345,44 | (278.300 + 3.068.200) / 2 = 1.673.250 | **3.328.595,44** |
 
 # COMMAND ----------
 
 # MAGIC %sql
+# MAGIC -- Q6 corrigida: replica exatamente a logica do NB01
+# MAGIC -- reference_value = AVG(billing_mensal) + AVG(sem_fatura_mensal)
+# MAGIC -- Ambas as medias calculadas independentemente sobre a janela 24m.
 # MAGIC WITH
 # MAGIC parcelas AS (
 # MAGIC   SELECT
@@ -380,27 +392,53 @@
 # MAGIC   FROM ds_catalog_dev.credit_engine.abt_inference_me_br
 # MAGIC   WHERE id_customer = 11175
 # MAGIC     AND reference_month IN ('2026-03-01', '2026-04-01')
+# MAGIC ),
+# MAGIC
+# MAGIC -- Medias calculadas de forma independente (como o NB01 faz internamente)
+# MAGIC avg_billing AS (
+# MAGIC   SELECT
+# MAGIC     a.reference_month,
+# MAGIC     COUNT(f.mes_pedido)                                           AS qtd_meses_billing,
+# MAGIC     ROUND(AVG(f.soma_mensal), 4)                                  AS avg_billing_mensal
+# MAGIC   FROM abt_stored a
+# MAGIC   LEFT JOIN fat_mensal f
+# MAGIC     ON f.mes_pedido >= add_months(a.reference_month, -24)
+# MAGIC    AND f.mes_pedido <= a.reference_month
+# MAGIC   GROUP BY a.reference_month
+# MAGIC ),
+# MAGIC
+# MAGIC avg_sf AS (
+# MAGIC   SELECT
+# MAGIC     a.reference_month,
+# MAGIC     COUNT(sf.mes_aprovacao)                                       AS qtd_meses_sem_fatura,
+# MAGIC     ROUND(AVG(sf.sem_fatura_mensal), 4)                          AS avg_sem_fatura_mensal,
+# MAGIC     -- Detalhe: quais meses de sem_fatura estao na janela
+# MAGIC     COLLECT_LIST(
+# MAGIC       CONCAT(CAST(sf.mes_aprovacao AS STRING), '=', CAST(ROUND(sf.sem_fatura_mensal,2) AS STRING))
+# MAGIC     )                                                             AS meses_sem_fatura_detalhe
+# MAGIC   FROM abt_stored a
+# MAGIC   LEFT JOIN sem_fatura sf
+# MAGIC     ON sf.mes_aprovacao >= add_months(a.reference_month, -24)
+# MAGIC    AND sf.mes_aprovacao <= a.reference_month
+# MAGIC   GROUP BY a.reference_month
 # MAGIC )
 # MAGIC
 # MAGIC SELECT
-# MAGIC   a.reference_month,
-# MAGIC   COUNT(f.mes_pedido)                                             AS qtd_meses_billing,
-# MAGIC   ROUND(AVG(f.soma_mensal), 4)                                   AS avg_billing_puro,
-# MAGIC   ROUND(SUM(sf.sem_fatura_mensal), 4)                            AS total_sem_fatura,
-# MAGIC   ROUND(AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0), 4)
+# MAGIC   ab.reference_month,
+# MAGIC   ab.qtd_meses_billing,
+# MAGIC   ab.avg_billing_mensal,
+# MAGIC   sf.qtd_meses_sem_fatura,
+# MAGIC   sf.avg_sem_fatura_mensal,
+# MAGIC   sf.meses_sem_fatura_detalhe,
+# MAGIC   ROUND(ab.avg_billing_mensal + COALESCE(sf.avg_sem_fatura_mensal, 0), 4)
 # MAGIC                                                                   AS reference_value_reconciliado,
-# MAGIC   a.reference_value                                              AS reference_value_armazenado,
+# MAGIC   a.reference_value                                               AS reference_value_armazenado,
 # MAGIC   ROUND(
-# MAGIC     (AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0)) - a.reference_value
+# MAGIC     (ab.avg_billing_mensal + COALESCE(sf.avg_sem_fatura_mensal, 0)) - a.reference_value
 # MAGIC   , 4)                                                           AS diferenca_final
 # MAGIC
 # MAGIC FROM abt_stored a
-# MAGIC LEFT JOIN fat_mensal f
-# MAGIC   ON f.mes_pedido >= add_months(a.reference_month, -24)
-# MAGIC  AND f.mes_pedido <= a.reference_month
-# MAGIC LEFT JOIN sem_fatura sf
-# MAGIC   ON sf.mes_aprovacao <= a.reference_month
-# MAGIC  AND sf.mes_aprovacao >= add_months(a.reference_month, -24)
+# MAGIC JOIN avg_billing ab ON ab.reference_month = a.reference_month
+# MAGIC JOIN avg_sf      sf ON sf.reference_month = a.reference_month
 # MAGIC
-# MAGIC GROUP BY a.reference_month, a.reference_value
 # MAGIC ORDER BY a.reference_month

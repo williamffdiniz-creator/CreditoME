@@ -314,8 +314,19 @@ ORDER BY ped.credit_approval_date DESC;
 
 
 -- =============================================================
--- QUERY 6: RECONCILIACAO TOTAL billing + sem_fatura = reference_value
--- Diferenca deve ser ZERO para confirmar a formula completa.
+-- QUERY 6: RECONCILIACAO TOTAL (CORRIGIDA)
+-- reference_value = AVG(billing_mensal) + AVG(sem_fatura_mensal)
+--
+-- NB01 faz LEFT JOIN duplo (billing x sem_fatura), cross-product.
+-- Medias sao calculadas de forma independente e somadas.
+--
+-- Prova via Q6 anterior: abt 2026-04 retornou qtd_meses=28
+--   = 14 billing x 2 meses sem_fatura (fev/26 e abr/26)
+--
+-- Calculo correto:
+--   abt 2026-03: 1.655.345 + 278.300/1        = 1.933.645 (1 mes sf)
+--   abt 2026-04: 1.655.345 + (278.300+3.068.200)/2 = 3.328.595 (2 meses sf)
+-- Diferenca deve ser ZERO.
 -- =============================================================
 
 WITH
@@ -367,27 +378,48 @@ abt_stored AS (
   FROM ds_catalog_dev.credit_engine.abt_inference_me_br
   WHERE id_customer = 11175
     AND reference_month IN ('2026-03-01', '2026-04-01')
+),
+
+-- Medias calculadas de forma independente (como o NB01 faz internamente)
+avg_billing AS (
+  SELECT
+    a.reference_month,
+    COUNT(f.mes_pedido)                                     AS qtd_meses_billing,
+    ROUND(AVG(f.soma_mensal), 4)                            AS avg_billing_mensal
+  FROM abt_stored a
+  LEFT JOIN fat_mensal f
+    ON f.mes_pedido >= add_months(a.reference_month, -24)
+   AND f.mes_pedido <= a.reference_month
+  GROUP BY a.reference_month
+),
+
+avg_sf AS (
+  SELECT
+    a.reference_month,
+    COUNT(sf.mes_aprovacao)                                 AS qtd_meses_sem_fatura,
+    ROUND(AVG(sf.sem_fatura_mensal), 4)                     AS avg_sem_fatura_mensal
+  FROM abt_stored a
+  LEFT JOIN sem_fatura sf
+    ON sf.mes_aprovacao >= add_months(a.reference_month, -24)
+   AND sf.mes_aprovacao <= a.reference_month
+  GROUP BY a.reference_month
 )
 
 SELECT
-  a.reference_month,
-  COUNT(f.mes_pedido)                                       AS qtd_meses_billing,
-  ROUND(AVG(f.soma_mensal), 4)                              AS avg_billing_puro,
-  ROUND(SUM(sf.sem_fatura_mensal), 4)                       AS total_sem_fatura,
-  ROUND(AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0), 4)
+  ab.reference_month,
+  ab.qtd_meses_billing,
+  ab.avg_billing_mensal,
+  sf.qtd_meses_sem_fatura,
+  sf.avg_sem_fatura_mensal,
+  ROUND(ab.avg_billing_mensal + COALESCE(sf.avg_sem_fatura_mensal, 0), 4)
                                                             AS reference_value_reconciliado,
   a.reference_value                                         AS reference_value_armazenado,
   ROUND(
-    (AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0)) - a.reference_value
+    (ab.avg_billing_mensal + COALESCE(sf.avg_sem_fatura_mensal, 0)) - a.reference_value
   , 4)                                                      AS diferenca_final
 
 FROM abt_stored a
-LEFT JOIN fat_mensal f
-  ON f.mes_pedido >= add_months(a.reference_month, -24)
- AND f.mes_pedido <= a.reference_month
-LEFT JOIN sem_fatura sf
-  ON sf.mes_aprovacao <= a.reference_month
- AND sf.mes_aprovacao >= add_months(a.reference_month, -24)
+JOIN avg_billing ab ON ab.reference_month = a.reference_month
+JOIN avg_sf      sf ON sf.reference_month = a.reference_month
 
-GROUP BY a.reference_month, a.reference_value
 ORDER BY a.reference_month;
