@@ -261,3 +261,129 @@
 # MAGIC
 # MAGIC GROUP BY a.reference_month, a.reference_value
 # MAGIC ORDER BY a.reference_month
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Query 5 — Pedidos sem fatura (`sem_fatura_mensal`)
+# MAGIC
+# MAGIC Identifica os pedidos aprovados mas não faturados (`invoice_date IS NULL`, `credit_approval_date IS NOT NULL`)
+# MAGIC que explicam a discrepância do `reference_value` na Q4.
+# MAGIC
+# MAGIC A diferença entre o `reference_value` armazenado e o AVG puro do faturamento é **exatamente**
+# MAGIC o `sem_fatura_mensal` adicionado pelo cross-join em `view_exposicao_maxima`:
+# MAGIC
+# MAGIC | Safra | AVG billing | sem_fatura/mês | reference_value armazenado |
+# MAGIC |---|---|---|---|
+# MAGIC | abt 2026-03 | 1.655.345,44 | +278.300,00 | **1.933.645,44** |
+# MAGIC | abt 2026-04 | 1.655.345,44 | +1.673.250,00 | **3.328.595,44** |
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC -- Pedidos de FRIMA aprovados mas nao faturados (sem_fatura_mensal)
+# MAGIC -- Estes sao os valores que explicam o salto no reference_value entre abt 2026-03 e 2026-04
+# MAGIC SELECT
+# MAGIC   ped.comex_order_number                                          AS numero_pedido,
+# MAGIC   ped.order_opening_date                                         AS dta_abertura_pedido,
+# MAGIC   ped.credit_approval_date                                       AS dta_aprovacao_credito,
+# MAGIC   ped.invoice_date                                               AS dta_fatura,
+# MAGIC   ped.order_value_usd                                            AS valor_pedido_usd,
+# MAGIC   ped.order_value_usd / 30                                       AS sem_fatura_mes_usd,
+# MAGIC   -- Quanto esse pedido contribuiu para cada safra
+# MAGIC   CASE
+# MAGIC     WHEN ped.credit_approval_date < '2026-03-01'
+# MAGIC      AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
+# MAGIC     THEN 'contribui para abt 2026-03'
+# MAGIC     ELSE NULL
+# MAGIC   END                                                            AS contribui_abt_2026_03,
+# MAGIC   CASE
+# MAGIC     WHEN ped.credit_approval_date < '2026-04-01'
+# MAGIC      AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-04-01')
+# MAGIC     THEN 'contribui para abt 2026-04'
+# MAGIC     ELSE NULL
+# MAGIC   END                                                            AS contribui_abt_2026_04
+# MAGIC
+# MAGIC FROM de_data_lake_prd.business_analytics.flat_orders_external_market ped
+# MAGIC WHERE ped.importer_id = 11175
+# MAGIC   AND ped.credit_approval_date IS NOT NULL
+# MAGIC   AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
+# MAGIC   AND ped.credit_approval_date >= '2024-03-01'   -- janela relevante
+# MAGIC
+# MAGIC ORDER BY ped.credit_approval_date DESC
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Query 6 — Reconciliação total: billing + sem_fatura = reference_value
+# MAGIC
+# MAGIC Soma o `faturamento_mensal` (Q4) com o `sem_fatura_mensal` (Q5) e compara com `reference_value` armazenado.
+# MAGIC Diferença deve ser **zero**.
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC WITH
+# MAGIC parcelas AS (
+# MAGIC   SELECT
+# MAGIC     fp.invoice_number,
+# MAGIC     date_trunc('month', ped.order_opening_date)                   AS mes_pedido,
+# MAGIC     CASE
+# MAGIC       WHEN fp.currency = 'CNY' THEN ROUND(fp.total_invoice / 7, 2)
+# MAGIC       ELSE fp.total_invoice
+# MAGIC     END                                                           AS valor_usd
+# MAGIC   FROM de_data_lake_prd.business_analytics.flat_financial_position_order_cambio_sys fp
+# MAGIC   INNER JOIN de_data_lake_prd.business_analytics.flat_orders_external_market ped
+# MAGIC     ON  ped.comex_order_number = fp.invoice_number
+# MAGIC     AND ped.importer_id        = 11175
+# MAGIC   WHERE fp.financial_position IN ('A RECEBER', 'JUDICIAL')
+# MAGIC     AND ped.order_opening_date IS NOT NULL
+# MAGIC     AND fp.total_invoice > 0
+# MAGIC ),
+# MAGIC
+# MAGIC fat_mensal AS (
+# MAGIC   SELECT mes_pedido, SUM(valor_usd) AS soma_mensal
+# MAGIC   FROM parcelas
+# MAGIC   GROUP BY mes_pedido
+# MAGIC ),
+# MAGIC
+# MAGIC sem_fatura AS (
+# MAGIC   SELECT
+# MAGIC     date_trunc('month', credit_approval_date)                     AS mes_aprovacao,
+# MAGIC     SUM(order_value_usd) / 30                                     AS sem_fatura_mensal
+# MAGIC   FROM de_data_lake_prd.business_analytics.flat_orders_external_market
+# MAGIC   WHERE importer_id = 11175
+# MAGIC     AND credit_approval_date IS NOT NULL
+# MAGIC     AND invoice_date IS NULL
+# MAGIC   GROUP BY date_trunc('month', credit_approval_date)
+# MAGIC ),
+# MAGIC
+# MAGIC abt_stored AS (
+# MAGIC   SELECT reference_month, reference_value
+# MAGIC   FROM ds_catalog_dev.credit_engine.abt_inference_me_br
+# MAGIC   WHERE id_customer = 11175
+# MAGIC     AND reference_month IN ('2026-03-01', '2026-04-01')
+# MAGIC )
+# MAGIC
+# MAGIC SELECT
+# MAGIC   a.reference_month,
+# MAGIC   COUNT(f.mes_pedido)                                             AS qtd_meses_billing,
+# MAGIC   ROUND(AVG(f.soma_mensal), 4)                                   AS avg_billing_puro,
+# MAGIC   ROUND(SUM(sf.sem_fatura_mensal), 4)                            AS total_sem_fatura,
+# MAGIC   ROUND(AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0), 4)
+# MAGIC                                                                   AS reference_value_reconciliado,
+# MAGIC   a.reference_value                                              AS reference_value_armazenado,
+# MAGIC   ROUND(
+# MAGIC     (AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0)) - a.reference_value
+# MAGIC   , 4)                                                           AS diferenca_final
+# MAGIC
+# MAGIC FROM abt_stored a
+# MAGIC LEFT JOIN fat_mensal f
+# MAGIC   ON f.mes_pedido >= add_months(a.reference_month, -24)
+# MAGIC  AND f.mes_pedido <= a.reference_month
+# MAGIC LEFT JOIN sem_fatura sf
+# MAGIC   ON sf.mes_aprovacao <= a.reference_month
+# MAGIC  AND sf.mes_aprovacao >= add_months(a.reference_month, -24)
+# MAGIC
+# MAGIC GROUP BY a.reference_month, a.reference_value
+# MAGIC ORDER BY a.reference_month

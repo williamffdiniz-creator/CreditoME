@@ -262,3 +262,117 @@ SELECT
 FROM fat_mensal
 WHERE mes_pedido >= add_months(DATE '2026-04-01', -24)   -- 2024-04-01
   AND mes_pedido <= DATE '2026-04-01';
+
+
+-- =============================================================
+-- QUERY 5: PEDIDOS SEM FATURA (sem_fatura_mensal)
+-- Identifica os pedidos aprovados mas nao faturados que
+-- explicam a discrepancia do reference_value na Q4.
+--
+-- A "view_exposicao_maxima" soma faturamento_mensal + sem_fatura_mensal.
+-- O cross-join com os meses de billing dilui o sem_fatura pelo
+-- numero de meses, adicionando-o ao AVG:
+--   reference_value = avg_billing + sem_fatura_mensal_no_mes_da_safra
+--
+-- abt 2026-03: 1.655.345 + 278.300  = 1.933.645  ✓
+-- abt 2026-04: 1.655.345 + 1.673.250 = 3.328.595 ✓
+-- =============================================================
+
+SELECT
+  ped.comex_order_number                                     AS numero_pedido,
+  ped.order_opening_date                                     AS dta_abertura_pedido,
+  ped.credit_approval_date                                   AS dta_aprovacao_credito,
+  ped.invoice_date                                           AS dta_fatura,
+  ped.order_value_usd                                        AS valor_pedido_usd,
+  ped.order_value_usd / 30                                   AS sem_fatura_mes_usd,
+  CASE
+    WHEN ped.credit_approval_date < '2026-03-01'
+     AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
+    THEN 'SIM'
+    ELSE 'NAO'
+  END                                                        AS contribui_abt_2026_03,
+  CASE
+    WHEN ped.credit_approval_date < '2026-04-01'
+     AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-04-01')
+    THEN 'SIM'
+    ELSE 'NAO'
+  END                                                        AS contribui_abt_2026_04
+
+FROM de_data_lake_prd.business_analytics.flat_orders_external_market ped
+WHERE ped.importer_id = 11175
+  AND ped.credit_approval_date IS NOT NULL
+  AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
+  AND ped.credit_approval_date >= '2024-03-01'
+
+ORDER BY ped.credit_approval_date DESC;
+
+
+-- =============================================================
+-- QUERY 6: RECONCILIACAO TOTAL billing + sem_fatura = reference_value
+-- Diferenca deve ser ZERO para confirmar a formula completa.
+-- =============================================================
+
+WITH
+parcelas AS (
+  SELECT
+    fp.invoice_number,
+    date_trunc('month', ped.order_opening_date)             AS mes_pedido,
+    CASE
+      WHEN fp.currency = 'CNY' THEN ROUND(fp.total_invoice / 7, 2)
+      ELSE fp.total_invoice
+    END                                                     AS valor_usd
+  FROM de_data_lake_prd.business_analytics.flat_financial_position_order_cambio_sys fp
+  INNER JOIN de_data_lake_prd.business_analytics.flat_orders_external_market ped
+    ON  ped.comex_order_number = fp.invoice_number
+    AND ped.importer_id        = 11175
+  WHERE fp.financial_position IN ('A RECEBER', 'JUDICIAL')
+    AND ped.order_opening_date IS NOT NULL
+    AND fp.total_invoice > 0
+),
+
+fat_mensal AS (
+  SELECT mes_pedido, SUM(valor_usd) AS soma_mensal
+  FROM parcelas
+  GROUP BY mes_pedido
+),
+
+sem_fatura AS (
+  SELECT
+    date_trunc('month', credit_approval_date)               AS mes_aprovacao,
+    SUM(order_value_usd) / 30                               AS sem_fatura_mensal
+  FROM de_data_lake_prd.business_analytics.flat_orders_external_market
+  WHERE importer_id = 11175
+    AND credit_approval_date IS NOT NULL
+    AND invoice_date IS NULL
+  GROUP BY date_trunc('month', credit_approval_date)
+),
+
+abt_stored AS (
+  SELECT reference_month, reference_value
+  FROM ds_catalog_dev.credit_engine.abt_inference_me_br
+  WHERE id_customer = 11175
+    AND reference_month IN ('2026-03-01', '2026-04-01')
+)
+
+SELECT
+  a.reference_month,
+  COUNT(f.mes_pedido)                                       AS qtd_meses_billing,
+  ROUND(AVG(f.soma_mensal), 4)                              AS avg_billing_puro,
+  ROUND(SUM(sf.sem_fatura_mensal), 4)                       AS total_sem_fatura,
+  ROUND(AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0), 4)
+                                                            AS reference_value_reconciliado,
+  a.reference_value                                         AS reference_value_armazenado,
+  ROUND(
+    (AVG(f.soma_mensal) + COALESCE(SUM(sf.sem_fatura_mensal), 0)) - a.reference_value
+  , 4)                                                      AS diferenca_final
+
+FROM abt_stored a
+LEFT JOIN fat_mensal f
+  ON f.mes_pedido >= add_months(a.reference_month, -24)
+ AND f.mes_pedido <= a.reference_month
+LEFT JOIN sem_fatura sf
+  ON sf.mes_aprovacao <= a.reference_month
+ AND sf.mes_aprovacao >= add_months(a.reference_month, -24)
+
+GROUP BY a.reference_month, a.reference_value
+ORDER BY a.reference_month;
