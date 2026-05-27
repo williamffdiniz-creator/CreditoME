@@ -280,29 +280,35 @@ WHERE mes_pedido >= add_months(DATE '2026-04-01', -24)   -- 2024-04-01
 
 SELECT
   ped.comex_order_number                                     AS numero_pedido,
+  date_trunc('month', ped.credit_approval_date)             AS mes_aprovacao,
   ped.order_opening_date                                     AS dta_abertura_pedido,
   ped.credit_approval_date                                   AS dta_aprovacao_credito,
   ped.invoice_date                                           AS dta_fatura,
-  ped.order_value_usd                                        AS valor_pedido_usd,
-  ped.order_value_usd / 30                                   AS sem_fatura_mes_usd,
+  ped.last_payment_date                                      AS dta_ultimo_pagamento,
+  ped.order_status                                           AS status_pedido,
+  ped.currency_id                                            AS moeda,
+  ped.total_order_value                                      AS valor_pedido_original,
   CASE
-    WHEN ped.credit_approval_date < '2026-03-01'
-     AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
-    THEN 'SIM'
+    WHEN ped.currency_id = 'CNY' THEN ROUND(ped.total_order_value / 7, 2)
+    ELSE ped.total_order_value
+  END                                                        AS valor_pedido_usd,
+  CASE
+    WHEN ped.credit_approval_date < '2026-03-01' THEN 'SIM'
     ELSE 'NAO'
   END                                                        AS contribui_abt_2026_03,
   CASE
-    WHEN ped.credit_approval_date < '2026-04-01'
-     AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-04-01')
-    THEN 'SIM'
+    WHEN ped.credit_approval_date < '2026-04-01' THEN 'SIM'
     ELSE 'NAO'
   END                                                        AS contribui_abt_2026_04
 
 FROM de_data_lake_prd.business_analytics.flat_orders_external_market ped
-WHERE ped.importer_id = 11175
+WHERE ped.importer_id          = 11175
+  AND ped.invoice_date         IS NULL
   AND ped.credit_approval_date IS NOT NULL
-  AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
-  AND ped.credit_approval_date >= '2024-03-01'
+  AND ped.last_payment_date    IS NULL
+  AND ped.order_status         NOT IN ('Cancelado', 'Aguardando')
+  AND ped.importer_name        NOT LIKE 'MINER%'
+  AND ped.importer_name        NOT LIKE 'SWIF%'
 
 ORDER BY ped.credit_approval_date DESC;
 
@@ -339,11 +345,20 @@ fat_mensal AS (
 sem_fatura AS (
   SELECT
     date_trunc('month', credit_approval_date)               AS mes_aprovacao,
-    SUM(order_value_usd) / 30                               AS sem_fatura_mensal
+    SUM(
+      CASE
+        WHEN currency_id = 'CNY' THEN ROUND(total_order_value / 7, 2)
+        ELSE total_order_value
+      END
+    )                                                       AS sem_fatura_mensal
   FROM de_data_lake_prd.business_analytics.flat_orders_external_market
-  WHERE importer_id = 11175
+  WHERE importer_id          = 11175
     AND credit_approval_date IS NOT NULL
-    AND invoice_date IS NULL
+    AND invoice_date         IS NULL
+    AND last_payment_date    IS NULL
+    AND order_status         NOT IN ('Cancelado', 'Aguardando')
+    AND importer_name        NOT LIKE 'MINER%'
+    AND importer_name        NOT LIKE 'SWIF%'
   GROUP BY date_trunc('month', credit_approval_date)
 ),
 

@@ -282,33 +282,41 @@
 
 # MAGIC %sql
 # MAGIC -- Pedidos de FRIMA aprovados mas nao faturados (sem_fatura_mensal)
-# MAGIC -- Estes sao os valores que explicam o salto no reference_value entre abt 2026-03 e 2026-04
+# MAGIC -- Replicando exatamente os filtros do NB01 (01_abt_inference_me_br):
+# MAGIC --   invoice_date IS NULL, credit_approval_date IS NOT NULL,
+# MAGIC --   last_payment_date IS NULL, order_status NOT IN ('Cancelado','Aguardando')
 # MAGIC SELECT
 # MAGIC   ped.comex_order_number                                          AS numero_pedido,
+# MAGIC   date_trunc('month', ped.credit_approval_date)                  AS mes_aprovacao,
 # MAGIC   ped.order_opening_date                                         AS dta_abertura_pedido,
 # MAGIC   ped.credit_approval_date                                       AS dta_aprovacao_credito,
 # MAGIC   ped.invoice_date                                               AS dta_fatura,
-# MAGIC   ped.order_value_usd                                            AS valor_pedido_usd,
-# MAGIC   ped.order_value_usd / 30                                       AS sem_fatura_mes_usd,
-# MAGIC   -- Quanto esse pedido contribuiu para cada safra
+# MAGIC   ped.last_payment_date                                          AS dta_ultimo_pagamento,
+# MAGIC   ped.order_status                                               AS status_pedido,
+# MAGIC   ped.currency_id                                                AS moeda,
+# MAGIC   ped.total_order_value                                          AS valor_pedido_original,
+# MAGIC   -- Conversao para USD (mesma logica do NB01, sem taxa de cambio disponivel aqui)
 # MAGIC   CASE
-# MAGIC     WHEN ped.credit_approval_date < '2026-03-01'
-# MAGIC      AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
-# MAGIC     THEN 'contribui para abt 2026-03'
-# MAGIC     ELSE NULL
+# MAGIC     WHEN ped.currency_id = 'CNY' THEN ROUND(ped.total_order_value / 7, 2)
+# MAGIC     ELSE ped.total_order_value
+# MAGIC   END                                                            AS valor_pedido_usd,
+# MAGIC   CASE
+# MAGIC     WHEN ped.credit_approval_date < '2026-03-01' THEN 'SIM'
+# MAGIC     ELSE 'NAO'
 # MAGIC   END                                                            AS contribui_abt_2026_03,
 # MAGIC   CASE
-# MAGIC     WHEN ped.credit_approval_date < '2026-04-01'
-# MAGIC      AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-04-01')
-# MAGIC     THEN 'contribui para abt 2026-04'
-# MAGIC     ELSE NULL
+# MAGIC     WHEN ped.credit_approval_date < '2026-04-01' THEN 'SIM'
+# MAGIC     ELSE 'NAO'
 # MAGIC   END                                                            AS contribui_abt_2026_04
 # MAGIC
 # MAGIC FROM de_data_lake_prd.business_analytics.flat_orders_external_market ped
-# MAGIC WHERE ped.importer_id = 11175
+# MAGIC WHERE ped.importer_id          = 11175
+# MAGIC   AND ped.invoice_date         IS NULL
 # MAGIC   AND ped.credit_approval_date IS NOT NULL
-# MAGIC   AND (ped.invoice_date IS NULL OR ped.invoice_date >= '2026-03-01')
-# MAGIC   AND ped.credit_approval_date >= '2024-03-01'   -- janela relevante
+# MAGIC   AND ped.last_payment_date    IS NULL
+# MAGIC   AND ped.order_status         NOT IN ('Cancelado', 'Aguardando')
+# MAGIC   AND ped.importer_name        NOT LIKE 'MINER%'
+# MAGIC   AND ped.importer_name        NOT LIKE 'SWIF%'
 # MAGIC
 # MAGIC ORDER BY ped.credit_approval_date DESC
 
@@ -350,11 +358,20 @@
 # MAGIC sem_fatura AS (
 # MAGIC   SELECT
 # MAGIC     date_trunc('month', credit_approval_date)                     AS mes_aprovacao,
-# MAGIC     SUM(order_value_usd) / 30                                     AS sem_fatura_mensal
+# MAGIC     SUM(
+# MAGIC       CASE
+# MAGIC         WHEN currency_id = 'CNY' THEN ROUND(total_order_value / 7, 2)
+# MAGIC         ELSE total_order_value
+# MAGIC       END
+# MAGIC     )                                                             AS sem_fatura_mensal
 # MAGIC   FROM de_data_lake_prd.business_analytics.flat_orders_external_market
-# MAGIC   WHERE importer_id = 11175
+# MAGIC   WHERE importer_id          = 11175
 # MAGIC     AND credit_approval_date IS NOT NULL
-# MAGIC     AND invoice_date IS NULL
+# MAGIC     AND invoice_date         IS NULL
+# MAGIC     AND last_payment_date    IS NULL
+# MAGIC     AND order_status         NOT IN ('Cancelado', 'Aguardando')
+# MAGIC     AND importer_name        NOT LIKE 'MINER%'
+# MAGIC     AND importer_name        NOT LIKE 'SWIF%'
 # MAGIC   GROUP BY date_trunc('month', credit_approval_date)
 # MAGIC ),
 # MAGIC
