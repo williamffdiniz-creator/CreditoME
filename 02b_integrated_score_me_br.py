@@ -506,15 +506,17 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE limit_mi_usd IS NOT NULL)                                        AS ges_com_cliente_mimeq,
 # MAGIC   -- Membros apenas-ME de GEs com cliente MI+ME (afetados pelo Passo 1c)
+# MAGIC   -- Reescrito como INNER JOIN para evitar IllegalArgumentException de self-join correlacionado no Spark
 # MAGIC   (SELECT COUNT(*)
 # MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br am
-# MAGIC    WHERE am.limit_mi_usd IS NULL
-# MAGIC      AND EXISTS (
-# MAGIC        SELECT 1 FROM ds_catalog_dev.credit_engine.apply_model_me_br mimeq
-# MAGIC        WHERE mimeq.id_customer_group_economic = am.id_customer_group_economic
-# MAGIC          AND mimeq.reference_month            = am.reference_month
-# MAGIC          AND mimeq.limit_mi_usd IS NOT NULL
-# MAGIC      ))                                                                   AS linhas_ge_apenas_me_atualizadas,
+# MAGIC    INNER JOIN (
+# MAGIC      SELECT DISTINCT id_customer_group_economic, reference_month
+# MAGIC      FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC      WHERE limit_mi_usd IS NOT NULL
+# MAGIC    ) mimeq
+# MAGIC      ON  am.id_customer_group_economic = mimeq.id_customer_group_economic
+# MAGIC      AND am.reference_month            = mimeq.reference_month
+# MAGIC    WHERE am.limit_mi_usd IS NULL)                                         AS linhas_ge_apenas_me_atualizadas,
 # MAGIC
 # MAGIC   -- PASSO 2: cobertura de credit_limit_end
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
