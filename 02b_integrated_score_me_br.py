@@ -3,14 +3,14 @@
 # MAGIC %md
 # MAGIC ## 02b: Score Integrado ME BR (MI x ME) + Limite Final por Categoria
 # MAGIC
-# MAGIC Este notebook executa **dois passos sequenciais** sobre `apply_model_me_br`:
+# MAGIC Este notebook executa **quatro passos sequenciais** sobre `apply_model_me_br`:
 # MAGIC
 # MAGIC ---
 # MAGIC
 # MAGIC ### Passo 1 — Score Integrado (MI + ME)
 # MAGIC
 # MAGIC Consome `ds_catalog_dev.credit_engine.integrated_score_chile` (produzida pelo NB02b do pipeline Chile)
-# MAGIC e atualiza 9 colunas nos clientes presentes em ambos os mercados.
+# MAGIC e atualiza colunas nos clientes **elegiveis em ambos os mercados no mesmo mes**.
 # MAGIC Clientes apenas-ME nao sao tocados neste passo.
 # MAGIC
 # MAGIC | Coluna atualizada | Valor | Fonte |
@@ -27,12 +27,42 @@
 # MAGIC
 # MAGIC ---
 # MAGIC
+# MAGIC ### Passo 1b — Propagacao de identidade MI+ME para todos os meses
+# MAGIC
+# MAGIC **Problema:** clientes compartilhados MI+ME podem nao ser elegiveis simultaneamente em ambos os
+# MAGIC modelos em determinados meses (ex: comprou so no MI em jan, so no ME em fev). O Passo 1 so atualiza
+# MAGIC os meses onde ambos os modelos tem score — os demais ficam com `market_scope = NULL` e
+# MAGIC `id_customer_mi = NULL`, fazendo o cliente parecer "apenas-ME" naquele periodo.
+# MAGIC
+# MAGIC **Solucao (replica do NB02b Chile cell-8):** propaga `market_scope = 'MI_CHILE'` e `id_customer_mi`
+# MAGIC para **todos os** `reference_month` do cliente ME que tem contraparte MI (via RUT), independente de
+# MAGIC elegibilidade mensal. Fonte de verdade: `integrated_score_chile` (mapeamento estatico de identidade).
+# MAGIC Toca apenas linhas onde esses campos ainda sao NULL (idempotente).
+# MAGIC
+# MAGIC ---
+# MAGIC
+# MAGIC ### Passo 1c — Propagacao do credit_limit combinado para membros do GE
+# MAGIC
+# MAGIC **Problema:** o `credit_limit` em `apply_model_me_br` e um limite de **grupo economico** (GE) —
+# MAGIC todos os membros do GE compartilham o mesmo teto. Quando um cliente MI+ME pertence a um GE com
+# MAGIC outros membros apenas-ME, apos o Passo 1 apenas o cliente MI+ME tem o limite combinado (MI+ME);
+# MAGIC os demais membros do GE continuam com o limite apenas-ME, gerando inconsistencia.
+# MAGIC
+# MAGIC **Solucao:** para cada GE que possui pelo menos um cliente MI+ME atualizado no Passo 1
+# MAGIC (identificado por `limit_mi_usd IS NOT NULL`), propaga o `credit_limit` e `credit_limit_clp`
+# MAGIC combinados para todos os outros membros apenas-ME do mesmo GE e safra.
+# MAGIC
+# MAGIC Executa apenas para meses onde o Passo 1 efetivamente atualizou o cliente MI+ME.
+# MAGIC Os membros apenas-ME permanecem com `limit_mi_usd = NULL` e `market_scope = NULL` —
+# MAGIC apenas o valor do limite do grupo e corrigido.
+# MAGIC
+# MAGIC ---
+# MAGIC
 # MAGIC ### Passo 2 — Teto por Categoria (credit_limit_end)
 # MAGIC
 # MAGIC Aplica o teto de categoria sobre o `credit_limit` de **todos os clientes**
-# MAGIC (independente de serem MI+ME ou apenas-ME). Executa depois do Passo 1 para
-# MAGIC garantir que o `credit_limit` dos clientes compartilhados ja reflete a soma
-# MAGIC dos dois mercados antes da comparacao com o teto.
+# MAGIC (independente de serem MI+ME ou apenas-ME). Executa depois dos Passos 1/1b/1c para
+# MAGIC garantir que o `credit_limit` de todo o GE ja reflete a soma dos dois mercados.
 # MAGIC
 # MAGIC **Alinhamento temporal:** join direto `apply_model.reference_month = customer_top_category.reference_quarter`.
 # MAGIC Apesar do nome `reference_quarter`, a coluna e mensal com janela movel m+1,
@@ -65,12 +95,18 @@
 # MAGIC ```
 # MAGIC Pipeline Chile:  NB01 → NB02 (apply_model_mi_chile) → NB02b (integrated_score_chile)
 # MAGIC Pipeline ME BR:  NB01 → NB01b (category_limit) → NB02 (apply_model_me_br) → NB02b (este)
+# MAGIC
+# MAGIC Dentro deste notebook:
+# MAGIC   Passo 1  → score integrado (meses com ambos os mercados elegiveis)
+# MAGIC   Passo 1b → identidade MI+ME para todos os meses (market_scope + id_customer_mi)
+# MAGIC   Passo 1c → credit_limit combinado para demais membros do GE
+# MAGIC   Passo 2  → teto por categoria sobre todos os clientes
 # MAGIC ```
 # MAGIC
 # MAGIC ### Dependencias
 # MAGIC
-# MAGIC - `ds_catalog_dev.credit_engine.integrated_score_chile` (NB02b Chile) — scores e limites MI+ME
-# MAGIC - `ds_catalog_dev.credit_engine.apply_model_me_br` (NB02 ME BR) — tabela destino de ambos os MERGEs
+# MAGIC - `ds_catalog_dev.credit_engine.integrated_score_chile` (NB02b Chile) — scores, limites e crosswalk MI+ME
+# MAGIC - `ds_catalog_dev.credit_engine.apply_model_me_br` (NB02 ME BR) — tabela destino de todos os MERGEs
 # MAGIC - `ds_catalog_dev.credit_engine.customer_top_category_me_br` (NB01b) — categoria principal por cliente/trimestre
 # MAGIC - `ds_catalog_dev.credit_engine.category_limit_me_br` (NB01b) — teto de limite por categoria/trimestre
 # MAGIC - `de_data_lake_prd.financeiro.dw_tab_parametro_cotacao_cambial` — taxa CLP/USD para conversao do teto
@@ -153,6 +189,103 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC   target.id_customer_mi        = source.id_customer_mi,
 # MAGIC   target.market_scope          = 'MI_CHILE',
 # MAGIC   target.updated_at            = current_timestamp()
+
+# COMMAND ----------
+
+# DBTITLE 1,PASSO 1b — MERGE: identidade MI+ME para todos os meses (market_scope + id_customer_mi)
+# MAGIC %sql
+# MAGIC -- ====================================================================
+# MAGIC -- MERGE PASSO 1b: propagar id_customer_mi e market_scope para TODOS os meses
+# MAGIC -- ====================================================================
+# MAGIC -- Replica a logica do NB02b Chile (cell-8 de 02b_integrated_score_chile):
+# MAGIC -- preenche id_customer_mi e market_scope = 'MI_CHILE' para TODOS os
+# MAGIC -- reference_month do cliente ME que tem contraparte MI (via RUT),
+# MAGIC -- INDEPENDENTE de elegibilidade mensal no modelo MI.
+# MAGIC --
+# MAGIC -- Problema resolvido: clientes compartilhados MI+ME que em determinados
+# MAGIC -- meses so tem atividade em um dos mercados ficam sem market_scope nesses
+# MAGIC -- meses apos o Passo 1 (pois integrated_score_chile so tem registros para
+# MAGIC -- meses elegiveis nos dois modelos simultaneamente). Sem este passo esses
+# MAGIC -- meses aparecem como "apenas-ME" no apply_model_me_br.
+# MAGIC --
+# MAGIC -- Fonte de verdade: integrated_score_chile (mapeamento estatico MI<->ME via RUT).
+# MAGIC -- Toca apenas linhas onde market_scope IS NULL ou id_customer_mi IS NULL
+# MAGIC -- para evitar sobrescrever meses ja corretamente preenchidos pelo Passo 1.
+# MAGIC -- Idempotente: re-execucoes nao alteram linhas ja corretas.
+# MAGIC -- ====================================================================
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.apply_model_me_br AS target
+# MAGIC USING (
+# MAGIC   SELECT DISTINCT
+# MAGIC     id_customer_me,
+# MAGIC     id_customer_mi
+# MAGIC   FROM ds_catalog_dev.credit_engine.integrated_score_chile
+# MAGIC ) AS source
+# MAGIC ON target.id_customer = source.id_customer_me
+# MAGIC WHEN MATCHED AND (target.market_scope IS NULL OR target.id_customer_mi IS NULL) THEN UPDATE SET
+# MAGIC   target.market_scope   = 'MI_CHILE',
+# MAGIC   target.id_customer_mi = source.id_customer_mi,
+# MAGIC   target.updated_at     = current_timestamp()
+
+# COMMAND ----------
+
+# DBTITLE 1,PASSO 1c — MERGE: credit_limit combinado para membros do GE
+# MAGIC %sql
+# MAGIC -- ====================================================================
+# MAGIC -- MERGE PASSO 1c: propagar credit_limit combinado para demais membros do GE
+# MAGIC -- ====================================================================
+# MAGIC -- O credit_limit em apply_model_me_br e um limite de GRUPO ECONOMICO (GE):
+# MAGIC -- todos os membros do GE devem compartilhar o mesmo teto de credito.
+# MAGIC --
+# MAGIC -- Problema: apos o Passo 1, apenas o cliente MI+ME tem credit_limit atualizado
+# MAGIC -- para a soma MI+ME. Os outros membros apenas-ME do mesmo GE continuam com o
+# MAGIC -- limite exclusivamente-ME calculado pelo NB02 — gerando inconsistencia no grupo.
+# MAGIC --
+# MAGIC -- Solucao: para cada GE que possui ao menos um cliente MI+ME atualizado no Passo 1
+# MAGIC -- (identificado por limit_mi_usd IS NOT NULL), agrega o credit_limit combinado e
+# MAGIC -- propaga para todos os membros apenas-ME do mesmo GE e safra.
+# MAGIC --
+# MAGIC -- Detalhes de design:
+# MAGIC --   - Agrega via MAX no improvavel caso de >1 cliente MI+ME no mesmo GE
+# MAGIC --     (MAX e conservador: pega o maior limite combinado disponivel)
+# MAGIC --   - Membros apenas-ME permanecem com limit_mi_usd=NULL e market_scope=NULL:
+# MAGIC --     apenas o valor de credit_limit e corrigido para consistencia do GE
+# MAGIC --   - Executa apenas para meses onde o Passo 1 atualizou (limit_mi_usd IS NOT NULL):
+# MAGIC --     meses sem elegibilidade MI+ME permanecem com o limite apenas-ME
+# MAGIC --   - O Passo 2 (credit_limit_end) sera aplicado sobre o credit_limit ja corrigido
+# MAGIC -- ====================================================================
+# MAGIC MERGE INTO ds_catalog_dev.credit_engine.apply_model_me_br AS target
+# MAGIC USING (
+# MAGIC   WITH ge_com_mimeq AS (
+# MAGIC     -- GEs que possuem ao menos um cliente MI+ME atualizado no Passo 1
+# MAGIC     -- Agrega o credit_limit combinado por GE/safra
+# MAGIC     SELECT
+# MAGIC       id_customer_group_economic,
+# MAGIC       reference_month,
+# MAGIC       MAX(credit_limit)     AS credit_limit_combined,
+# MAGIC       MAX(credit_limit_clp) AS credit_limit_clp_combined
+# MAGIC     FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC     WHERE limit_mi_usd IS NOT NULL  -- cliente MI+ME atualizado no Passo 1
+# MAGIC     GROUP BY id_customer_group_economic, reference_month
+# MAGIC   )
+# MAGIC   -- Seleciona apenas os membros apenas-ME do GE (limit_mi_usd IS NULL)
+# MAGIC   -- para receber o credit_limit combinado do grupo
+# MAGIC   SELECT
+# MAGIC     am.id_customer,
+# MAGIC     am.reference_month,
+# MAGIC     gc.credit_limit_combined,
+# MAGIC     gc.credit_limit_clp_combined
+# MAGIC   FROM ds_catalog_dev.credit_engine.apply_model_me_br am
+# MAGIC   INNER JOIN ge_com_mimeq gc
+# MAGIC     ON  am.id_customer_group_economic = gc.id_customer_group_economic
+# MAGIC     AND am.reference_month            = gc.reference_month
+# MAGIC   WHERE am.limit_mi_usd IS NULL  -- apenas membros apenas-ME do GE
+# MAGIC ) AS source
+# MAGIC ON  target.id_customer     = source.id_customer
+# MAGIC AND target.reference_month = source.reference_month
+# MAGIC WHEN MATCHED THEN UPDATE SET
+# MAGIC   target.credit_limit     = source.credit_limit_combined,
+# MAGIC   target.credit_limit_clp = source.credit_limit_clp_combined,
+# MAGIC   target.updated_at       = current_timestamp()
 
 # COMMAND ----------
 
@@ -329,20 +462,20 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # DBTITLE 1,Sanity checks: validacao pos-execucao
 # MAGIC %sql
 # MAGIC -- ====================================================================
-# MAGIC -- SANITY CHECKS: apply_model_me_br apos NB02b (Passos 1 e 2)
+# MAGIC -- SANITY CHECKS: apply_model_me_br apos NB02b (Passos 1, 1b, 1c e 2)
 # MAGIC -- ====================================================================
 # MAGIC SELECT
-# MAGIC   -- Volume
+# MAGIC   -- Volume geral
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br)                          AS total_linhas,
 # MAGIC   (SELECT COUNT(DISTINCT reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)   AS total_safras,
 # MAGIC   (SELECT CAST(MAX(reference_month) AS STRING)
 # MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br)                                          AS safra_max,
 # MAGIC
-# MAGIC   -- PASSO 1: clientes MI+ME vs apenas-ME
+# MAGIC   -- PASSO 1: score integrado — meses com ambos os mercados elegiveis
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
-# MAGIC    WHERE limit_mi_usd IS NOT NULL)                                        AS clientes_mi_me,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
-# MAGIC    WHERE limit_mi_usd IS NULL)                                            AS clientes_apenas_me,
+# MAGIC    WHERE limit_mi_usd IS NOT NULL)                                        AS linhas_mi_me_passo1,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE limit_mi_usd IS NOT NULL)                                        AS clientes_distintos_mi_me,
 # MAGIC
 # MAGIC   -- PASSO 1: qualidade do integrated_score
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
@@ -350,18 +483,50 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE integrated_score < 0 OR integrated_score > 1)                   AS integrated_score_out_of_range,
 # MAGIC
+# MAGIC   -- PASSO 1b: identidade MI+ME propagada para todos os meses
+# MAGIC   -- Esperado: clientes_com_id_customer_mi > linhas_mi_me_passo1
+# MAGIC   -- (ha meses com market_scope mas sem limit_mi — meses parcialmente ativos)
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE market_scope = 'MI_CHILE')                                       AS linhas_market_scope_mi_chile,
+# MAGIC   (SELECT COUNT(DISTINCT id_customer) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE market_scope = 'MI_CHILE')                                       AS clientes_distintos_market_scope,
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE id_customer_mi IS NOT NULL)                                      AS linhas_com_id_customer_mi,
+# MAGIC   -- Meses com market_scope mas sem limit_mi (clientes elegiveis so em 1 mercado naquele mes)
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE market_scope = 'MI_CHILE' AND limit_mi_usd IS NULL)              AS meses_market_scope_sem_limit_mi,
+# MAGIC   -- Consistencia: market_scope e id_customer_mi devem ser preenchidos juntos
+# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE (market_scope IS NOT NULL AND id_customer_mi IS NULL)
+# MAGIC       OR (market_scope IS NULL     AND id_customer_mi IS NOT NULL))       AS inconsistencias_market_scope,
+# MAGIC
+# MAGIC   -- PASSO 1c: propagacao para membros do GE
+# MAGIC   -- GEs distintos que tem ao menos 1 cliente MI+ME
+# MAGIC   (SELECT COUNT(DISTINCT id_customer_group_economic)
+# MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br
+# MAGIC    WHERE limit_mi_usd IS NOT NULL)                                        AS ges_com_cliente_mimeq,
+# MAGIC   -- Membros apenas-ME de GEs com cliente MI+ME (afetados pelo Passo 1c)
+# MAGIC   (SELECT COUNT(*)
+# MAGIC    FROM ds_catalog_dev.credit_engine.apply_model_me_br am
+# MAGIC    WHERE am.limit_mi_usd IS NULL
+# MAGIC      AND EXISTS (
+# MAGIC        SELECT 1 FROM ds_catalog_dev.credit_engine.apply_model_me_br mimeq
+# MAGIC        WHERE mimeq.id_customer_group_economic = am.id_customer_group_economic
+# MAGIC          AND mimeq.reference_month            = am.reference_month
+# MAGIC          AND mimeq.limit_mi_usd IS NOT NULL
+# MAGIC      ))                                                                   AS linhas_ge_apenas_me_atualizadas,
+# MAGIC
 # MAGIC   -- PASSO 2: cobertura de credit_limit_end
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NOT NULL)                                    AS clientes_com_credit_limit_end,
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NULL)                                        AS clientes_sem_credit_limit_end,
 # MAGIC
-# MAGIC   -- PASSO 2: quantos tiveram o limite capado pela categoria
+# MAGIC   -- PASSO 2: quantos tiveram o limite capado pela categoria na ultima safra
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end < credit_limit
 # MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS clientes_capados_ultima_safra,
-# MAGIC   -- PASSO 2: quantos nao foram afetados pelo cap (limite ja abaixo do teto)
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end = credit_limit
 # MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
@@ -376,24 +541,14 @@ spark.sql(f"CREATE OR REPLACE TEMP VIEW config_pipeline AS SELECT CAST('{effecti
 # MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
 # MAGIC                                                                           AS avg_credit_limit_end,
 # MAGIC
-# MAGIC   -- Alinhamento com integrated_score_chile (Passo 1)
+# MAGIC   -- Alinhamento com integrated_score_chile
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.integrated_score_chile
 # MAGIC    WHERE reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.integrated_score_chile))
-# MAGIC                                                                           AS isc_clientes_ultima_safra,
+# MAGIC                                                                           AS isc_linhas_ultima_safra,
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE limit_mi_usd IS NOT NULL
 # MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br))
-# MAGIC                                                                           AS me_clientes_mi_me_ultima_safra,
-# MAGIC
-# MAGIC   -- PASSO 1: market_scope e id_customer_mi
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
-# MAGIC    WHERE market_scope = 'MI_CHILE')                                       AS clientes_market_scope_mi_chile,
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
-# MAGIC    WHERE id_customer_mi IS NOT NULL)                                      AS clientes_com_id_customer_mi,
-# MAGIC   -- Consistencia: market_scope e id_customer_mi devem ser preenchidos juntos
-# MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
-# MAGIC    WHERE (market_scope IS NOT NULL AND id_customer_mi IS NULL)
-# MAGIC       OR (market_scope IS NULL AND id_customer_mi IS NOT NULL))           AS inconsistencias_market_scope
+# MAGIC                                                                           AS me_linhas_mi_me_ultima_safra
 
 # COMMAND ----------
 
