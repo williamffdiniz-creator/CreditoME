@@ -44,7 +44,16 @@
 # MAGIC | 2-MEDIO | adjusted_score_ge <= 0.30 | reference_value_ge × payment_term_ge × 1.1 |
 # MAGIC | 3-ALTO  | adjusted_score_ge > 0.30  | reference_value_ge × payment_term_ge × 0.9 |
 # MAGIC
-# MAGIC Sem cap maximo de limite.
+# MAGIC ### Fator de Suavizacao — Teto Global do Limite (aplicado neste notebook)
+# MAGIC
+# MAGIC `teto_global_ge = reference_value_ge × smoothing_factor_ge`
+# MAGIC
+# MAGIC - `smoothing_factor` por membro = **5.0** (default; diferenciavel por banda de risco quando necessario)
+# MAGIC - `smoothing_factor_ge` do GE = **MIN** entre membros → captura a maior inadimplencia do grupo (menor multiplicador = maior penalizacao)
+# MAGIC - Aplicado **antes** do teto por categoria (NB02b), pois e o teto global absoluto do cliente/grupo
+# MAGIC - Regra: multiplicador proximo de 0 penaliza | proximo de 1 (ou superior) bonifica
+# MAGIC
+# MAGIC `credit_limit_ge = LEAST(rv_ge × pt_ge × band_mult, rv_ge × smoothing_factor_ge)`
 # MAGIC
 # MAGIC ### Teto por Categoria (calculado no NB02b)
 # MAGIC
@@ -265,7 +274,8 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC     COALESCE(inf.reference_value,     0)                         AS reference_value,
 # MAGIC     COALESCE(inf.reference_value_clp, 0)                         AS reference_value_clp,
 # MAGIC     COALESCE(inf.payment_term,        1.0)                       AS payment_term,
-# MAGIC     COALESCE(inf.id_customer_group_economic, inf.id_customer)    AS id_customer_group_economic
+# MAGIC     COALESCE(inf.id_customer_group_economic, inf.id_customer)    AS id_customer_group_economic,
+# MAGIC     5.0                                                           AS smoothing_factor
 # MAGIC   FROM ds_catalog_dev.credit_engine.abt_inference_me_br AS inf
 # MAGIC   LEFT JOIN ds_catalog_dev.credit_engine.portfolio_abt_group_me_br AS pag
 # MAGIC     ON inf.reference_month = pag.reference_month
@@ -279,11 +289,12 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC ),
 # MAGIC
 # MAGIC -- GRUPO ECONOMICO
-# MAGIC -- reference_value_ge   = SOMA de exposicao do grupo/safra
-# MAGIC -- adjusted_score_ge    = MAX do grupo (pior risco domina)
-# MAGIC -- payment_term_ge      = MAX do grupo (mais conservador)
-# MAGIC -- Multiplicadores: 1-BAIXO *1.2 | 2-MEDIO *1.1 | 3-ALTO *0.9 (todos com payment_term_ge)
-# MAGIC -- Sem cap maximo de limite.
+# MAGIC -- reference_value_ge    = SOMA de exposicao do grupo/safra
+# MAGIC -- adjusted_score_ge     = MAX do grupo (pior risco domina)
+# MAGIC -- payment_term_ge       = MAX do grupo (mais conservador)
+# MAGIC -- smoothing_factor_ge   = MIN do grupo (maior inadimplencia = menor fator = maior penalizacao)
+# MAGIC -- Multiplicadores: 1-BAIXO *1.2 | 2-MEDIO *1.1 | 3-ALTO *0.9 (sobre payment_term_ge)
+# MAGIC -- Teto global: credit_limit_ge = LEAST(formula_banda, rv_ge * smoothing_factor_ge)
 # MAGIC grupo_economico_agg AS (
 # MAGIC   SELECT
 # MAGIC     s.id_customer_group_economic,
@@ -292,29 +303,36 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC     SUM(s.reference_value_clp) AS reference_value_clp_ge,
 # MAGIC     MAX(s.adjusted_score)      AS adjusted_score_ge,
 # MAGIC     MAX(s.payment_term)        AS payment_term_ge,
+# MAGIC     MIN(s.smoothing_factor)    AS smoothing_factor_ge,
 # MAGIC     CASE
 # MAGIC       WHEN MAX(s.adjusted_score) <= 0.02 THEN '1-BAIXO'
 # MAGIC       WHEN MAX(s.adjusted_score) <= 0.30 THEN '2-MEDIO'
 # MAGIC       ELSE '3-ALTO'
 # MAGIC     END AS score_band_ge,
-# MAGIC     -- Limite USD por grupo/safra
-# MAGIC     ROUND(
-# MAGIC       SUM(s.reference_value) * MAX(s.payment_term) *
-# MAGIC       CASE
-# MAGIC         WHEN MAX(s.adjusted_score) <= 0.02 THEN 1.2
-# MAGIC         WHEN MAX(s.adjusted_score) <= 0.30 THEN 1.1
-# MAGIC         ELSE 0.9
-# MAGIC       END
-# MAGIC     , 4) AS credit_limit_ge,
-# MAGIC     -- Limite CLP por grupo/safra
-# MAGIC     ROUND(
-# MAGIC       SUM(s.reference_value_clp) * MAX(s.payment_term) *
-# MAGIC       CASE
-# MAGIC         WHEN MAX(s.adjusted_score) <= 0.02 THEN 1.2
-# MAGIC         WHEN MAX(s.adjusted_score) <= 0.30 THEN 1.1
-# MAGIC         ELSE 0.9
-# MAGIC       END
-# MAGIC     , 4) AS credit_limit_clp_ge
+# MAGIC     -- Limite USD por grupo/safra: formula de banda limitada pelo teto global de suavizacao
+# MAGIC     LEAST(
+# MAGIC       ROUND(
+# MAGIC         SUM(s.reference_value) * MAX(s.payment_term) *
+# MAGIC         CASE
+# MAGIC           WHEN MAX(s.adjusted_score) <= 0.02 THEN 1.2
+# MAGIC           WHEN MAX(s.adjusted_score) <= 0.30 THEN 1.1
+# MAGIC           ELSE 0.9
+# MAGIC         END
+# MAGIC       , 4),
+# MAGIC       ROUND(SUM(s.reference_value) * MIN(s.smoothing_factor), 4)
+# MAGIC     ) AS credit_limit_ge,
+# MAGIC     -- Limite CLP por grupo/safra: formula de banda limitada pelo teto global de suavizacao
+# MAGIC     LEAST(
+# MAGIC       ROUND(
+# MAGIC         SUM(s.reference_value_clp) * MAX(s.payment_term) *
+# MAGIC         CASE
+# MAGIC           WHEN MAX(s.adjusted_score) <= 0.02 THEN 1.2
+# MAGIC           WHEN MAX(s.adjusted_score) <= 0.30 THEN 1.1
+# MAGIC           ELSE 0.9
+# MAGIC         END
+# MAGIC       , 4),
+# MAGIC       ROUND(SUM(s.reference_value_clp) * MIN(s.smoothing_factor), 4)
+# MAGIC     ) AS credit_limit_clp_ge
 # MAGIC   FROM score_base s
 # MAGIC   GROUP BY s.id_customer_group_economic, s.reference_month
 # MAGIC )
@@ -428,6 +446,20 @@ print(f"Data de referencia do pipeline: {effective_date}")
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE score_band = '3-ALTO'
 # MAGIC      AND reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)) AS band_alto,
+# MAGIC   -- Monitoramento do fator de suavizacao: clientes contidos pelo teto global (credit_limit < rv * payment_term * band_mult)
+# MAGIC   -- Um cliente e contido quando payment_term * band_mult > smoothing_factor (5.0), independente da banda
+# MAGIC   (SELECT COUNT(*) FROM (
+# MAGIC     SELECT am.id_customer
+# MAGIC     FROM ds_catalog_dev.credit_engine.apply_model_me_br am
+# MAGIC     JOIN ds_catalog_dev.credit_engine.abt_inference_me_br inf
+# MAGIC       ON  inf.id_customer     = am.id_customer
+# MAGIC       AND inf.reference_month = add_months(am.reference_month, -1)
+# MAGIC     WHERE am.reference_month = (SELECT MAX(reference_month) FROM ds_catalog_dev.credit_engine.apply_model_me_br)
+# MAGIC       AND inf.payment_term * CASE
+# MAGIC             WHEN (inf.historical_weight * inf.score + (1.0 - inf.historical_weight) * 0.30) <= 0.02 THEN 1.2
+# MAGIC             WHEN (inf.historical_weight * inf.score + (1.0 - inf.historical_weight) * 0.30) <= 0.30 THEN 1.1
+# MAGIC             ELSE 0.9 END > 5.0
+# MAGIC   ))                                                                       AS clientes_contidos_pelo_teto_suavizacao,
 # MAGIC   -- credit_limit_end: preenchido pelo NB02b (esperado NULL neste ponto)
 # MAGIC   (SELECT COUNT(*) FROM ds_catalog_dev.credit_engine.apply_model_me_br
 # MAGIC    WHERE credit_limit_end IS NOT NULL)                                     AS clientes_com_credit_limit_end,
